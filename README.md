@@ -1,44 +1,59 @@
 # Hermes Agent
 
-Hermes Agent is a containerized service with persistent memory, file-based skills, and a ChromaDB companion container. DEV, TEST, and PROD each have a Compose file. The runtime image is built for GitHub Container Registry as `ghcr.io/<owner>/hermes-agent:<tag>`.
+Hermes Agent is a containerized Python AI agent service (`FastAPI` + `MCP` + `ChromaDB`) with persistent memory, file-based skills, semantic RAG search, and an autonomous multi-step tool-calling loop. DEV, TEST, and PROD each have a Compose file. The runtime image is built for GitHub Container Registry as `ghcr.io/sadramst/hermes-agent:<tag>`.
 
 ```mermaid
 flowchart TB
   subgraph net ["Docker network hermes-net"]
-    agent["hermes-agent\nGET /health :8080"]
+    agent["hermes-agent\nGET /health :8080\nPOST /agent/run\nPOST /completions\nPOST /mcp"]
     chroma["chromadb :8000"]
   end
   mem["memory volume"]
   skillsVol["skills volume"]
   embeddings["chroma data volume"]
-  agent -->|"HTTP heartbeat"| chroma
+  agent -->|"HTTP heartbeat & embeddings"| chroma
   agent --> mem
   agent --> skillsVol
   chroma --> embeddings
 ```
 
-The big picture of the four containers is [docs/architecture/overview.md](docs/architecture/overview.md). The detailed diagrams are in [docs/architecture/current.md](docs/architecture/current.md). The next increment, Jev as a System One layer Hermes calls rather than a replacement for its reasoner, is [docs/architecture/jev-system-one.md](docs/architecture/jev-system-one.md). Cursor connects to this API as an MCP client when `HERMES_MCP_ENABLED=on`. The default is `off`. Hermes does not call Cursor and does not use Cursor's LLM. The plan is [docs/architecture/cursor-account.md](docs/architecture/cursor-account.md). Grok uses that same MCP route on `api.hermes.newplanetit.com.au`. The dashboard at `hermes.newplanetit.com.au` stays on port 9119. `delegate_to_grok` can post one task to Grok when `HERMES_GROK_HANDOFF=on`. The default is `off`. The setup steps are [docs/architecture/grok-hermes.md](docs/architecture/grok-hermes.md).
+The big picture of the four containers is [docs/architecture/overview.md](docs/architecture/overview.md). The detailed diagrams are in [docs/architecture/current.md](docs/architecture/current.md). The optional System-One layer is [docs/architecture/jev-system-one.md](docs/architecture/jev-system-one.md). Antigravity, Cursor, and other MCP clients connect to this API at `/mcp` when `HERMES_MCP_ENABLED=on` (default `off`); see [docs/architecture/cursor-account.md](docs/architecture/cursor-account.md). External channel handoffs on `api.hermes.sadramst.dev` and the dashboard at `hermes.sadramst.dev` (port 9119) are documented in [docs/architecture/grok-hermes.md](docs/architecture/grok-hermes.md).
 
-## Run
+## Quick Start (Windows / Local & Docker)
 
-Install and test on the host:
+### 1. Native Windows `.venv`
 
-```bash
-python -m pip install -e ".[dev]"
-pytest -q -m "not integration"
+```powershell
+python -m venv .venv
+.\.venv\Scripts\pip install -e ".[dev]"
+.\.venv\Scripts\pytest -q -m "not integration"
+
+# Copy .env.example to .env.local, add your OpenRouter key, and start the local server:
+Copy-Item .env.example .env.local
+.\scripts\start-local.ps1
 ```
 
-Start the dev stack:
+### 2. Docker Compose Stack
 
 ```bash
+# Start local Docker dev stack (agent on :8080, Chroma on :8000)
 docker/scripts/deploy.sh dev
+# Or on Windows PowerShell:
+.\scripts\start-local.ps1 -Docker
 ```
 
 Health in development: `http://127.0.0.1:8080/health`
 
-Production publishes the agent on host port **8569**. Chroma is not published. Health: `http://127.0.0.1:8569/health`
+Production publishes the agent on host port **8569**. Chroma is not published on the host. Health: `http://127.0.0.1:8569/health`
 
-`POST /completions` with `{"prompt":"..."}` loads the skill index and sends one completion to the model provider named by `HERMES_MODEL_BASE_URL`, `HERMES_MODEL_NAME`, and `HERMES_MODEL_API_KEY`. In production, document, completion, and tool routes require `Authorization: Bearer <HERMES_API_TOKEN>`. `POST /tools` runs an allowlist and asks a person before `delete_memory`. Shadow logs a `tool-call` judgment and still runs that allowlist. Soft holds a call unless Jev picked it and the score is clear. A Jev error in soft asks a person instead of running. Shadow and soft log a `model-router` tier and still call the frontier model named by `HERMES_MODEL_NAME`. Shadow logs a `supervisor` judgment and still returns the same tool results and the same completion text. Soft stops tool calls that follow a looping judgment and still returns the completion text. `GET /health` stays open and reports `jev.mode` (default `off`) and `jev.configured`. It omits `HERMES_JEV_API_KEY`. Completions call Jev when `HERMES_JEV_MODE` is `shadow` or `soft`. Shadow logs a skill suggestion and still sends the full skill index. Soft mode adds a `skill_relevance` block the model may ignore, and the skill index stays in the prompt. Search in those modes logs a passage judgment. Shadow returns every Chroma neighbor. Soft returns passages whose relevance score reaches the helping level. Shadow completions log a guardrail route and still return the model text. Soft completions withhold that text on review or block. Shadow memory writes log a kind and still store the record. Soft skips one-shot chatter. A Jev error still stores the record.
+## API & Autonomous Multi-Step Loop
+
+- **`POST /agent/run`** (`{"prompt": "...", "max_steps": 4}`): Runs the full multi-step OpenAI-compatible tool-calling loop (`HermesAgent.run_agent`). The model can autonomously invoke allowlisted tools across multiple turns (`recall`, `remember`, `search_memory`, `search_documents`, `save_document`, `list_skills`, `read_skill`), enforce human-in-the-loop holds on irreversible tools (`delete_memory`), and synthesize a grounded final answer with step traces (`steps`).
+- **`POST /completions`** (`{"prompt": "...", "autonomous": false}`): Loads the skill index (plus optional retrieved RAG context when `HERMES_RAG_MODE=soft`) and sends a single completion—or runs the full multi-step tool loop when `"autonomous": true` is passed.
+- **`POST /documents`** & **`GET /documents/search`**: Chunk, embed, and search documents in ChromaDB with hybrid vector + keyword fusion.
+- **`GET /memory/search`**: Search indexed memory files by meaning when `HERMES_MEMORY_INDEX=on`.
+- **`POST /tools`**: Execute an allowlisted batch of tool calls directly (`recall`, `remember`, `search_memory`, `search_documents`, `save_document`, `list_skills`, `read_skill`, `delete_memory`, `delegate_to_grok`).
+- **`/mcp`**: Streamable HTTP MCP server when `HERMES_MCP_ENABLED=on`.
 
 | Environment | Command |
 | --- | --- |
@@ -50,18 +65,20 @@ A step-by-step install for Ubuntu Server 24.04 and newer is in [docs/deployment/
 
 ## Layout
 
-- `src/` agent, API, memory, skills, Chroma client, CLI
-- `docker/` Dockerfile, Compose files, env templates, scripts
-- `storage/memory` and `storage/skills` host paths used by the dev bind mounts
-- `vector-db/` Chroma connection notes
-- `docs/` architecture, deployment, and testing
-- `.github/workflows/` CI
+- `src/` — Agent core & autonomous loop, FastAPI + MCP server, memory store, skills loader, Chroma & embedding clients, CLI
+- `docker/` — Dockerfile, Compose files (`dev`, `test`, `prod`), env templates (`.env.dev`, `.env.prod.example`, `.env.agent.example`, `.env.gateway.example`), scripts
+- `storage/memory` & `storage/skills` — Persistent memory files and `SKILL.md` definitions (`bootstrap-hermes-stack`, `autonomous-problem-solver`)
+- `scripts/` — Windows local launcher (`start-local.ps1`) and evaluation scripts
+- `vector-db/` — Chroma connection notes and config
+- `docs/` — Architecture, deployment, and testing documentation
+- `.github/workflows/` — GitHub Actions CI/CD
 
 ## CLI
 
 ```bash
 hermes health
 hermes skills
+hermes run "Summarize our deployment ports and save a note" --max-steps 4
+hermes migrate-documents --from hermes-documents
+hermes reindex-memory
 ```
-
-`hermes health` prints JSON. `chroma.reachable` is false when Chroma is down; the process status stays `ok`.

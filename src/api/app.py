@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from agent import __version__
 from agent.core import HermesAgent, _health_payload
-from agent.tools import ToolCall
+from agent.tools import MAX_STEPS, ToolCall
 from services.chroma import ChromaClient, ChromaError
 from services.documents import MAX_LIMIT
 from services.embedder import EmbeddingError, build_embedder
@@ -27,6 +27,13 @@ class DocumentBody(BaseModel):
 
 class CompletionBody(BaseModel):
     prompt: str
+    autonomous: bool = False
+    max_steps: int = MAX_STEPS
+
+
+class AgentRunBody(BaseModel):
+    prompt: str
+    max_steps: int = MAX_STEPS
 
 
 class ToolCallBody(BaseModel):
@@ -165,13 +172,32 @@ def create_app(
         _: None = Depends(require_api_credential),
     ) -> dict[str, object]:
         try:
-            return agent.complete(body.prompt)
+            return agent.complete(
+                body.prompt,
+                autonomous=body.autonomous,
+                max_steps=body.max_steps,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ModelNotConfigured as exc:
             raise HTTPException(status_code=503, detail="Model provider is not configured") from exc
         except ModelError as exc:
             logger.warning("model.complete_failed env=%s status=%s", resolved.hermes_env, exc.status)
+            raise HTTPException(status_code=502, detail="Model request failed") from exc
+
+    @app.post("/agent/run")
+    def run_agent(
+        body: AgentRunBody,
+        _: None = Depends(require_api_credential),
+    ) -> dict[str, object]:
+        try:
+            return agent.run_agent(body.prompt, max_steps=body.max_steps)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ModelNotConfigured as exc:
+            raise HTTPException(status_code=503, detail="Model provider is not configured") from exc
+        except ModelError as exc:
+            logger.warning("agent.run_failed env=%s status=%s", resolved.hermes_env, exc.status)
             raise HTTPException(status_code=502, detail="Model request failed") from exc
 
     if mcp_mount is None:

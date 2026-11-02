@@ -37,6 +37,10 @@ TOOL_CRITERIA = {
     "recall": "Read one stored memory record.",
     "remember": "Store one memory record.",
     "list_skills": "List the loaded skills.",
+    "read_skill": "Read the full instructions of one loaded skill.",
+    "search_documents": "Search saved knowledge base documents.",
+    "save_document": "Save one document into the knowledge base.",
+    "search_memory": "Search stored memory records by meaning or keyword.",
     "delete_memory": "Delete one memory record.",
     "delegate_to_grok": "Send one task to Grok. The payload is the task text.",
 }

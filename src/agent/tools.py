@@ -1,4 +1,4 @@
-"""Allowlisted tool runner.
+"""Allowlisted tool runner and OpenAI-compatible tool definitions for the autonomous loop.
 
 Hermes code checks the name and the argument keys, then runs the tool.
 Irreversible tools ask a person and do not run. This module does not call Jev.
@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from agent.decisions.policy import IRREVERSIBLE_TOOLS
+from services.chroma import ChromaError
+from services.embedder import EmbeddingError
 from services.grok import GrokError, MAX_TASK_CHARS, REJECTED_TEXT
 
 MAX_STEPS = 4
@@ -19,6 +21,11 @@ UNKNOWN_TEXT = "This tool is not on the allowlist."
 ARGUMENTS_TEXT = "These arguments are outside the allowlist."
 MISSING_TEXT = "No record is stored for that key."
 EMPTY_SKILLS = "No skills are loaded."
+MISSING_SKILL = "No skill is loaded with that name."
+NO_DOCUMENTS = "No documents matched."
+NO_MEMORIES = "No memory records matched."
+SEARCH_FAILED = "Search failed."
+SAVE_FAILED = "Document save failed."
 OFF_TEXT = "Grok handoff is off."
 TASK_TEXT = "This task is outside the allowlist."
 
@@ -27,9 +34,112 @@ TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
     "recall": frozenset({"key"}),
     "remember": frozenset({"key", "value"}),
     "list_skills": frozenset(),
+    "read_skill": frozenset({"name"}),
+    "search_documents": frozenset({"q"}),
+    "save_document": frozenset({"id", "text"}),
+    "search_memory": frozenset({"q"}),
     "delete_memory": frozenset({"key"}),
     "delegate_to_grok": frozenset({"task"}),
 }
+
+AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "recall",
+            "description": "Read a stored memory record by its exact key.",
+            "parameters": {
+                "type": "object",
+                "properties": {"key": {"type": "string", "description": "Memory key to read."}},
+                "required": ["key"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember",
+            "description": "Save a durable fact or note into Hermes persistent memory under a stable key.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Short alphanumeric/dash memory key."},
+                    "value": {"type": "string", "description": "Fact or note text to store."},
+                },
+                "required": ["key", "value"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_memory",
+            "description": "Search stored memory records by meaning or keyword when the exact key is unknown.",
+            "parameters": {
+                "type": "object",
+                "properties": {"q": {"type": "string", "description": "Search query for memory."}},
+                "required": ["q"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_documents",
+            "description": "Search ChromaDB knowledge base documents for relevant passages and [label] citations.",
+            "parameters": {
+                "type": "object",
+                "properties": {"q": {"type": "string", "description": "Search query."}},
+                "required": ["q"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_document",
+            "description": "Chunk, embed, and store a document in the ChromaDB knowledge base.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Stable document ID."},
+                    "text": {"type": "string", "description": "Document text content."},
+                },
+                "required": ["id", "text"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_skills",
+            "description": "List all loaded Hermes skills and their versions.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_skill",
+            "description": "Read the full instructions of a loaded Hermes skill by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Name of the skill."}},
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
 
 
 @dataclass(frozen=True)
@@ -86,7 +196,15 @@ def _stopped(agent: object, call: ToolCall) -> ToolResult | None:
         if not _key_ok(agent, call.arguments.get("key", "")):
             return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
         return ToolResult(call.name, "ask_person", ASK_TEXT)
-    if call.name != "list_skills" and not _key_ok(agent, call.arguments["key"]):
+    if call.name in {"recall", "remember"} and not _key_ok(agent, call.arguments["key"]):
+        return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
+    if call.name in {"search_documents", "search_memory"} and not call.arguments["q"].strip():
+        return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
+    if call.name == "read_skill" and not call.arguments["name"].strip():
+        return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
+    if call.name == "save_document" and (
+        not call.arguments["id"].strip() or not call.arguments["text"].strip()
+    ):
         return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
     return None
 
@@ -116,6 +234,14 @@ def _execute(agent: object, call: ToolCall) -> ToolResult:
         return _delegate(agent, call)
     if call.name == "list_skills":
         return ToolResult(call.name, "ran", _skills(agent))
+    if call.name == "read_skill":
+        return ToolResult(call.name, "ran", _read_skill(agent, call.arguments["name"]))
+    if call.name == "search_documents":
+        return ToolResult(call.name, "ran", _search_documents(agent, call.arguments["q"]))
+    if call.name == "save_document":
+        return _save_document(agent, call.arguments["id"], call.arguments["text"])
+    if call.name == "search_memory":
+        return ToolResult(call.name, "ran", _search_memory(agent, call.arguments["q"]))
     key = call.arguments["key"]
     if call.name == "recall":
         return ToolResult(call.name, "ran", _recall(agent, key))
@@ -179,6 +305,93 @@ def _skills(agent: object) -> str:
     if not lines:
         return EMPTY_SKILLS
     return "\n".join(lines)
+
+
+def _read_skill(agent: object, name: str) -> str:
+    list_skills = getattr(agent, "list_skills", None)
+    if not callable(list_skills):
+        return MISSING_SKILL
+    target = name.strip()
+    for skill in list_skills():
+        if getattr(skill, "name", None) == target:
+            body = getattr(skill, "body", "")
+            return str(body).strip() if body else f"{target} ({getattr(skill, 'version', '0.0.0')})"
+    return MISSING_SKILL
+
+
+def _search_documents(agent: object, query: str) -> str:
+    search = getattr(agent, "search_documents", None)
+    if not callable(search):
+        return SEARCH_FAILED
+    try:
+        payload = search(query, 5)
+    except (ChromaError, EmbeddingError, ValueError):
+        return SEARCH_FAILED
+    matches = payload.get("matches") if isinstance(payload, dict) else None
+    if not isinstance(matches, list) or not matches:
+        return NO_DOCUMENTS
+    lines: list[str] = []
+    for match in matches:
+        if isinstance(match, dict):
+            label = match.get("id")
+            text = match.get("text")
+            if isinstance(label, str) and isinstance(text, str):
+                lines.append(f"[{label}]\n{text}")
+    return "\n\n".join(lines) if lines else NO_DOCUMENTS
+
+
+def _save_document(agent: object, doc_id: str, text: str) -> ToolResult:
+    save = getattr(agent, "save_document", None)
+    if not callable(save):
+        return ToolResult("save_document", "refused", SAVE_FAILED)
+    try:
+        result = save(doc_id, text)
+    except ValueError:
+        return ToolResult("save_document", "refused", ARGUMENTS_TEXT)
+    except (ChromaError, EmbeddingError):
+        return ToolResult("save_document", "refused", SAVE_FAILED)
+    chunks = result.get("chunks", 0) if isinstance(result, dict) else 0
+    return ToolResult("save_document", "ran", f"saved id={doc_id} chunks={chunks}")
+
+
+def _search_memory(agent: object, query: str) -> str:
+    search = getattr(agent, "search_memory", None)
+    if callable(search):
+        try:
+            payload = search(query, 5)
+            matches = payload.get("matches") if isinstance(payload, dict) else None
+            if isinstance(matches, list):
+                lines = [
+                    f"key={row['key']}\n{row['text']}"
+                    for row in matches
+                    if isinstance(row, dict)
+                    and isinstance(row.get("key"), str)
+                    and isinstance(row.get("text"), str)
+                ]
+                return "\n\n".join(lines) if lines else NO_MEMORIES
+        except ValueError:
+            pass
+        except (ChromaError, EmbeddingError):
+            return SEARCH_FAILED
+    # Fallback to local file keyword search when HERMES_MEMORY_INDEX is off
+    memory = getattr(agent, "memory", None)
+    keys_fn = getattr(memory, "keys", None)
+    read_fn = getattr(memory, "read", None)
+    if not (callable(keys_fn) and callable(read_fn)):
+        return NO_MEMORIES
+    terms = [term.lower() for term in query.split() if term.strip()]
+    found: list[str] = []
+    for key in keys_fn():
+        try:
+            val = read_fn(key)
+        except OSError:
+            continue
+        haystack = f"{key} {val}".lower()
+        if not terms or any(term in haystack for term in terms):
+            found.append(f"key={key}\n{val}")
+            if len(found) >= 5:
+                break
+    return "\n\n".join(found) if found else NO_MEMORIES
 
 
 def _log(agent: object, result: ToolResult) -> None:

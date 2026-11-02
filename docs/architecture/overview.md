@@ -6,10 +6,10 @@ Start here. The detailed behavior of the Python API is [current.md](current.md).
 
 | Service | What it does | How you reach it |
 | --- | --- | --- |
-| `hermes-agent` | The Python API in this repository (FastAPI). It answers health checks, runs completions, stores notes, lists skills, searches documents, and runs tools. When MCP is on, Cursor and Grok call it at `/mcp`. | Host port **8569**. On this deployment the public name is `api.hermes.newplanetit.com.au`. |
+| `hermes-agent` | The Python API in this repository (FastAPI). It answers health checks, runs completions, stores notes, lists skills, searches documents, and runs tools. When MCP is on, Cursor and Grok call it at `/mcp`. | Host port **8569**. On this deployment the public name is `api.hermes.sadramst.dev`. |
 | `chromadb` | The document database. It keeps the searchable copies of documents (embeddings) on its own disk. | No host port. It sits on a private Docker network. |
 | `chroma-gate` | The lock in front of that database. It checks `CHROMA_AUTH_TOKEN`, then forwards the request. It is the only container that can open `chromadb`. | No host port. `hermes-agent` calls `http://chroma-gate:8000`. |
-| `hermes-gateway` | The Nous chat dashboard. A separate program (`nousresearch/hermes-agent`). You open it in a browser and chat there. | Host port **9119** (the website) and **8642** (its API). On this deployment the public name is `hermes.newplanetit.com.au`. |
+| `hermes-gateway` | The Nous chat dashboard. A separate program (`nousresearch/hermes-agent`). You open it in a browser and chat there. | Host port **9119** (the website) and **8642** (its API). On this deployment the public name is `hermes.sadramst.dev`. |
 
 ```mermaid
 flowchart LR

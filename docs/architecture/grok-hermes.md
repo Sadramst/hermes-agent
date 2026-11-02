@@ -1,15 +1,15 @@
 # Grok and Hermes
 
-Grok calls this API. A later tool on this API hands one bounded task to Grok. The browser chat at `https://hermes.newplanetit.com.au` stays the Nous dashboard.
+Grok calls this API. A later tool on this API hands one bounded task to Grok. The browser chat at `https://hermes.sadramst.dev` stays the Nous dashboard.
 
 Completions on this service stay on `HERMES_MODEL_BASE_URL` and `HERMES_MODEL_NAME`. Grok's own turns stay on the Cursor account. The MCP server in [cursor-account.md](cursor-account.md) is already in the image and defaults to off.
 
 ```mermaid
 flowchart LR
   person["You\nbrowser chat"]
-  dash["hermes.newplanetit.com.au\nport 9119\ndashboard"]
+  dash["hermes.sadramst.dev\nport 9119\ndashboard"]
   grok["Grok\nBDK on Cursor"]
-  api["api.hermes.newplanetit.com.au\nport 8569\nthis API"]
+  api["api.hermes.sadramst.dev\nport 8569\nthis API"]
   world["memory, skills,\nChroma"]
   person --> dash
   grok -->|"MCP\nAuthorization: Bearer"| api
@@ -19,14 +19,14 @@ flowchart LR
 
 ## The hostname you have
 
-`https://hermes.newplanetit.com.au` is the dashboard. Nginx Proxy Manager forwards that name to `http://192.168.16.113:9119`, as [ubuntu-server.md](../deployment/ubuntu-server.md) records. `GET /health` on that name returns the dashboard sign-in page.
+`https://hermes.sadramst.dev` is the dashboard. Nginx Proxy Manager forwards that name to `http://192.168.16.113:9119`, as [ubuntu-server.md](../deployment/ubuntu-server.md) records. `GET /health` on that name returns the dashboard sign-in page.
 
 The Python API listens on host port **8569**. `/mcp` is on that port when `HERMES_MCP_ENABLED=on`. That route is not behind the dashboard name.
 
 | Name | Forwards to | What answers |
 | --- | --- | --- |
-| `hermes.newplanetit.com.au` | `192.168.16.113:9119` | Dashboard sign-in |
-| `api.hermes.newplanetit.com.au` | `192.168.16.113:8569` | This API. JSON health. `/mcp` when enabled |
+| `hermes.sadramst.dev` | `192.168.16.113:9119` | Dashboard sign-in |
+| `api.hermes.sadramst.dev` | `192.168.16.113:8569` | This API. JSON health. `/mcp` when enabled |
 | `127.0.0.1:8569` on the server | the agent container | The same API, for checks on the machine |
 
 Leave the dashboard name on port 9119. Add the `api` name for Grok and for any other MCP client.
@@ -35,7 +35,7 @@ Leave the dashboard name on port 9119. Add the `api` name for Grok and for any o
 
 | Direction | Call | Body | Credential |
 | --- | --- | --- | --- |
-| Grok to Hermes | `POST https://api.hermes.newplanetit.com.au/mcp` | One tool name and its arguments | `Authorization: Bearer <HERMES_API_TOKEN>` |
+| Grok to Hermes | `POST https://api.hermes.sadramst.dev/mcp` | One tool name and its arguments | `Authorization: Bearer <HERMES_API_TOKEN>` |
 | Hermes to Grok | `POST $AGENT_ALIAS_URL/v1/channels/hermes/task` | `handoffId` and `task` | `X-Agent-Alias-Token` and `X-Hermes-Handoff` |
 
 The task is the job text. Memory rows, Chroma passages, and tokens stay on this machine. During the turn, Grok calls MCP when it needs a fact. When the turn finishes, channel code writes one short memory. The key is `grok-result-<handoffId>`.
@@ -50,26 +50,26 @@ Finish each step before the next. Steps 1–4 are on the Hermes server. Step 5 i
 
 ### 1. Publish the API hostname
 
-Add a DNS record for `api.hermes.newplanetit.com.au` on the same address as `hermes.newplanetit.com.au`.
+Add a DNS record for `api.hermes.sadramst.dev` on the same address as `hermes.sadramst.dev`.
 
 In Nginx Proxy Manager, add a proxy host:
 
 | Field | Value |
 | --- | --- |
-| Domain | `api.hermes.newplanetit.com.au` |
+| Domain | `api.hermes.sadramst.dev` |
 | Scheme | `http` |
 | Forward hostname | `192.168.16.113` |
 | Forward port | `8569` |
 | Websockets support | on |
 | SSL | Request a certificate and force SSL |
 
-Send the original `Host` header upstream. A rewritten host of `192.168.16.113` makes `/mcp` answer **421**. Leave `hermes.newplanetit.com.au` pointed at port **9119**.
+Send the original `Host` header upstream. A rewritten host of `192.168.16.113` makes `/mcp` answer **421**. Leave `hermes.sadramst.dev` pointed at port **9119**.
 
 From a machine other than the server:
 
 ```bash
-curl -sS https://api.hermes.newplanetit.com.au/health
-curl -sS https://hermes.newplanetit.com.au/health | head -c 200
+curl -sS https://api.hermes.sadramst.dev/health
+curl -sS https://hermes.sadramst.dev/health | head -c 200
 ```
 
 The API body is JSON and contains `mcp`. The dashboard body is HTML and contains `Sign in`. A failed API curl is a proxy or agent problem. Fix that before changing MCP settings.
@@ -91,7 +91,7 @@ curl -sS http://127.0.0.1:8569/health
 
 ```bash
 HERMES_MCP_ENABLED=on
-HERMES_MCP_ALLOWED_HOSTS=api.hermes.newplanetit.com.au
+HERMES_MCP_ALLOWED_HOSTS=api.hermes.sadramst.dev
 ```
 
 `HERMES_API_TOKEN` is already required in production. If that line is empty, generate one with `openssl rand -hex 32` and store it only in this file. An enabled MCP server with an empty token fails at startup.
@@ -103,7 +103,7 @@ docker compose --env-file docker/env/.env.prod \
   -f docker/docker-compose.prod.yml up -d hermes-agent
 ```
 
-The code allows that hostname exactly, and it also allows `api.hermes.newplanetit.com.au:*`. Localhost is already allowed. At most eight hosts are accepted.
+The code allows that hostname exactly, and it also allows `api.hermes.sadramst.dev:*`. Localhost is already allowed. At most eight hosts are accepted.
 
 ### 4. Prove the public MCP route
 
@@ -118,9 +118,9 @@ curl -sS http://127.0.0.1:8569/health
 From outside:
 
 ```bash
-curl -sS https://api.hermes.newplanetit.com.au/health
+curl -sS https://api.hermes.sadramst.dev/health
 curl -sS -o /dev/null -w '%{http_code}\n' \
-  -X POST https://api.hermes.newplanetit.com.au/mcp \
+  -X POST https://api.hermes.sadramst.dev/mcp \
   -H 'content-type: application/json' \
   -H 'accept: application/json, text/event-stream' \
   -d '{}'
@@ -131,7 +131,7 @@ The public health body matches the server. The POST without a bearer is **401**.
 | Status | Meaning |
 | --- | --- |
 | 401 | The route is up and the bearer is required |
-| 421 | `Host` is not `api.hermes.newplanetit.com.au` |
+| 421 | `Host` is not `api.hermes.sadramst.dev` |
 | 404 | `HERMES_MCP_ENABLED` is still off, or the proxy still points at 9119 |
 | 429 | Sixty requests landed inside sixty seconds. The cap counts calls with no bearer |
 
@@ -148,7 +148,7 @@ import { defineConnection } from "@cursor/bdk";
 
 export default defineConnection({
   // Trailing slash: bare /mcp can 307 to /mcp/ and drop Authorization on hosted clients.
-  url: "https://api.hermes.newplanetit.com.au/mcp/",
+  url: "https://api.hermes.sadramst.dev/mcp/",
   headers: {
     Authorization: "Bearer ${HERMES_API_TOKEN}",
   },
@@ -160,7 +160,7 @@ In `bot/agent.ts`, the hosting block names the egress host and the secret:
 
 ```ts
 hosting: {
-  egressDomains: ["api.hermes.newplanetit.com.au"],
+  egressDomains: ["api.hermes.sadramst.dev"],
   secretNames: ["HERMES_API_TOKEN"],
 }
 ```
@@ -241,7 +241,7 @@ The first `bdk deploy` prints the alias token once. Store it in `.env.agent` wit
 
 | Anti-pattern | What happens | Rule |
 | --- | --- | --- |
-| MCP URL on `https://hermes.newplanetit.com.au` | The client attaches to the dashboard on 9119 | API hostname, port 8569 |
+| MCP URL on `https://hermes.sadramst.dev` | The client attaches to the dashboard on 9119 | API hostname, port 8569 |
 | Alias token in `docker/env/.env.prod` | `hermes-gateway` loads that file | `.env.agent` on `hermes-agent` only |
 | Memory or tokens inside the webhook | Private material leaves the machine inside the task | `handoffId` and `task` only |
 | Hermes waits on the Grok reply | The completion hangs after hosting already returned 202 | Return the handoff id |

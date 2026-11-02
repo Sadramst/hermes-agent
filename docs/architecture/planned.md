@@ -22,7 +22,7 @@ Jev is not the model behind `POST /completions` and not the Nous `hermes-gateway
 
 Cursor calls this API over MCP when `HERMES_MCP_ENABLED` is `on`. The route defaults to off. Hermes does not call Cursor. The plan is [cursor-account.md](cursor-account.md).
 
-Grok calls the same `/mcp` route on `https://api.hermes.newplanetit.com.au`. `delegate_to_grok` posts one task to Grok and returns the handoff id. `HERMES_GROK_HANDOFF` defaults to `off`. The plan is [grok-hermes.md](grok-hermes.md).
+Grok calls the same `/mcp` route on `https://api.hermes.sadramst.dev`. `delegate_to_grok` posts one task to Grok and returns the handoff id. `HERMES_GROK_HANDOFF` defaults to `off`. The plan is [grok-hermes.md](grok-hermes.md).
 
 The numbered sequence is done. Soft promotion is done on production. The smaller-model switch code is shipped. The gateway skill-line MCP hook is live, and production gateway `SOUL.md` includes [gateway-skill-line-policy.md](gateway-skill-line-policy.md).
 

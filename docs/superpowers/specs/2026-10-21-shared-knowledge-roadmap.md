@@ -7,14 +7,14 @@
 
 ## Goal
 
-Every gateway and client that should share facts uses one library: the Python API (`hermes-agent` on port 8569 / `https://api.hermes.newplanetit.com.au`). Memory files, Chroma documents, and Jev gates stay there.
+Every gateway and client that should share facts uses one library: the Python API (`hermes-agent` on port 8569 / `https://api.hermes.sadramst.dev`). Memory files, Chroma documents, and Jev gates stay there.
 
 ## Done
 
-- MCP enabled on the API; public host `api.hermes.newplanetit.com.au`
+- MCP enabled on the API; public host `api.hermes.sadramst.dev`
 - Grok Bot connected with bearer `HERMES_API_TOKEN`
 - Gateway MCP server `hermes-api` at `http://hermes-agent:8080/mcp/` (Docker DNS; public URL timed out from inside the gateway)
-- `HERMES_MCP_ALLOWED_HOSTS` includes `api.hermes.newplanetit.com.au` and `hermes-agent`
+- `HERMES_MCP_ALLOWED_HOSTS` includes `api.hermes.sadramst.dev` and `hermes-agent`
 - Telegram recalled `grok-test`; Grok recalled `grok-test-new`
 - Telegram SOUL shared-memory policy applied; unprompted remember key `office-wifi-hint` readable from Grok
 - Grok handoff loop live: `HERMES_GROK_HANDOFF=on`, hosted `hermes-grok-agent`; channel writes `grok-result-<handoffId>` via Hermes MCP `remember` (not `POST /tools`) so soft tool-call cannot refuse writeback

@@ -1,7 +1,8 @@
-"""Coordinate skills, memory, documents, and model completions."""
+"""Coordinate skills, memory, documents, model completions, and autonomous multi-step tool loops."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from agent import __version__
@@ -52,7 +53,14 @@ from agent.decisions.skill_suggestion import (
     suggestion_block,
 )
 from agent.prompt import assemble_completion_prompt
-from agent.tools import MAX_STEPS, TOOL_ARGUMENTS, ToolCall, ToolResult, run_calls
+from agent.tools import (
+    AGENT_TOOL_SCHEMAS,
+    MAX_STEPS,
+    TOOL_ARGUMENTS,
+    ToolCall,
+    ToolResult,
+    run_calls,
+)
 from services.jev import JevClient, JevError
 from services.grok import GrokClient, GrokError
 from services.model import ModelClient, ModelNotConfigured, check_prompt
@@ -63,6 +71,7 @@ from utils.settings import Settings
 
 # Neighbors fetched per requested result, so the keyword fusion and the passage filter can reorder.
 FETCH_FACTOR = 2
+MAX_AGENT_STEPS = 16
 
 
 class MemoryIndexOff(ValueError):
@@ -70,7 +79,7 @@ class MemoryIndexOff(ValueError):
 
 
 class HermesAgent:
-    """In-process agent facade used by the API and the CLI."""
+    """In-process agent facade used by the API, MCP server, and CLI."""
 
     def __init__(
         self,
@@ -504,8 +513,14 @@ class HermesAgent:
             )
         return results
 
-    def complete(self, prompt: str) -> dict[str, object]:
-        """Send one completion: skill index, optional retrieved context, then the caller's prompt.
+    def complete(
+        self,
+        prompt: str,
+        *,
+        autonomous: bool = False,
+        max_steps: int = MAX_STEPS,
+    ) -> dict[str, object]:
+        """Send one completion or run the autonomous multi-step tool loop when autonomous=True.
 
         Shadow mode asks the skill-suggestion pack and logs the winner.
         Soft mode asks the same pack and adds a skill_relevance block.
@@ -517,6 +532,8 @@ class HermesAgent:
         Soft adds them as a Context block and returns their labels as `sources`.
         A search failure completes without context.
         """
+        if autonomous:
+            return self.run_agent(prompt, max_steps=max_steps)
         if self.model is None:
             raise ModelNotConfigured("Model provider is not configured")
         checked_prompt = check_prompt(prompt)
@@ -593,6 +610,150 @@ class HermesAgent:
             evidence=completion_evidence(name, len(skills)),
         )
         result: dict[str, object] = {"text": text, "model": name}
+        if sources:
+            result["sources"] = sources
+        return result
+
+    def run_agent(self, prompt: str, *, max_steps: int = MAX_STEPS) -> dict[str, object]:
+        """Run an autonomous multi-step tool-calling loop until the model answers or hits max_steps."""
+        if isinstance(max_steps, bool) or not isinstance(max_steps, int) or not 1 <= max_steps <= MAX_AGENT_STEPS:
+            raise ValueError(f"max_steps must be between 1 and {MAX_AGENT_STEPS}")
+        if self.model is None:
+            raise ModelNotConfigured("Model provider is not configured")
+        checked_prompt = check_prompt(prompt)
+        skills = self.skills.load()
+        check_prompt(assemble_completion_prompt(checked_prompt, skills))
+        block = _skill_suggestion(
+            mode=self.settings.jev_mode,
+            client=self.jev,
+            model=self.settings.jev_model,
+            request=checked_prompt,
+            skills=skills,
+        )
+        checked = check_prompt(assemble_completion_prompt(checked_prompt, skills, block))
+        inbound = _guard_screen(
+            mode=self.settings.jev_mode,
+            client=self.jev,
+            model=self.settings.jev_model,
+            side="inbound",
+            text=checked_prompt,
+        )
+        name = self.settings.model_name or self.model.model
+        held = held_reply(inbound) if self.settings.jev_mode == "soft" else None
+        if held is not None:
+            self.log.info(
+                "agent.run model=%s steps=0 skills=%s env=%s",
+                name,
+                len(skills),
+                self.settings.hermes_env,
+            )
+            _supervise(
+                mode=self.settings.jev_mode,
+                client=self.jev,
+                model=self.settings.jev_model,
+                side="completion",
+                steps=completion_steps("held"),
+                evidence=completion_evidence(name, len(skills)),
+            )
+            return {"text": held, "model": name, "steps": []}
+
+        context, sources = self._retrieve_context(checked_prompt, skills, block)
+        if context is not None:
+            checked = check_prompt(assemble_completion_prompt(checked_prompt, skills, block, context))
+        completion_model = _model_route(
+            mode=self.settings.jev_mode,
+            client=self.jev,
+            jev_model=self.settings.jev_model,
+            request=checked_prompt,
+            frontier_name=self.settings.model_name or self.model.model,
+            small_name=self.settings.model_small,
+        )
+        chat_fn = getattr(self.model, "chat", None)
+        if not callable(chat_fn):
+            text = self.model.complete(checked, model=completion_model)
+            steps_taken: list[dict[str, object]] = []
+        else:
+            messages: list[dict[str, object]] = [{"role": "user", "content": checked}]
+            steps_taken = []
+            text = ""
+            for step_index in range(max_steps):
+                turn = chat_fn(messages, tools=AGENT_TOOL_SCHEMAS, model=completion_model)
+                if not turn.tool_calls:
+                    text = turn.content
+                    break
+                batch_calls = turn.tool_calls[:MAX_STEPS]
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": turn.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": json.dumps(tc.arguments),
+                                },
+                            }
+                            for tc in batch_calls
+                        ],
+                    }
+                )
+                tool_results = self.run_tools(
+                    [ToolCall(tc.name, tc.arguments) for tc in batch_calls]
+                )
+                halt_loop = False
+                for tc, res in zip(batch_calls, tool_results):
+                    steps_taken.append(
+                        {
+                            "step": step_index + 1,
+                            "name": res.name,
+                            "status": res.status,
+                            "output": res.output,
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "content": res.output,
+                        }
+                    )
+                    if res.status in {"stopped", "ask_person"}:
+                        halt_loop = True
+                if halt_loop:
+                    break
+            if not text:
+                final_turn = chat_fn(messages, tools=None, model=completion_model)
+                text = final_turn.content
+
+        outbound = _guard_screen(
+            mode=self.settings.jev_mode,
+            client=self.jev,
+            model=self.settings.jev_model,
+            side="outbound",
+            text=text,
+        )
+        replacement = held_reply(outbound) if self.settings.jev_mode == "soft" else None
+        if replacement is not None:
+            text = replacement
+        self.log.info(
+            "agent.run model=%s steps=%s skills=%s env=%s",
+            completion_model,
+            len(steps_taken),
+            len(skills),
+            self.settings.hermes_env,
+        )
+        _supervise(
+            mode=self.settings.jev_mode,
+            client=self.jev,
+            model=self.settings.jev_model,
+            side="completion",
+            steps=completion_steps("ran"),
+            evidence=completion_evidence(name, len(skills)),
+        )
+        result: dict[str, object] = {"text": text, "model": name, "steps": steps_taken}
         if sources:
             result["sources"] = sources
         return result

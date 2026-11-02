@@ -190,7 +190,7 @@ def test_jev_plan_keeps_hermes_in_control(repo_root: Path) -> None:
     assert "does not become a Cursor agent" in cursor
     assert "cursor-account.md" in planned
     grok = (repo_root / "docs/architecture/grok-hermes.md").read_text(encoding="utf-8")
-    assert "api.hermes.newplanetit.com.au" in grok
+    assert "api.hermes.sadramst.dev" in grok
     assert "9119" in grok
     assert "delegate_to_grok" in grok
     assert "X-Agent-Alias-Token" in grok
