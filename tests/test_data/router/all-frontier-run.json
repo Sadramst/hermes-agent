@@ -1,0 +1,25 @@
+{
+  "note": "All-frontier router comparison. Completions were not switched to a smaller model.",
+  "recorded_at": "2026-10-21T09:50:08Z",
+  "jev_model": "jev-1.13.0",
+  "tasks": [
+    {
+      "id": "plan",
+      "prompt": "Write the deployment plan for promoting the agent.",
+      "gold_tier": "frontier",
+      "logged_tier": "frontier",
+      "reason": "ok",
+      "confidence": 0.67,
+      "match": true
+    },
+    {
+      "id": "easy",
+      "prompt": "Reply with the word pong.",
+      "gold_tier": "small",
+      "logged_tier": "small",
+      "reason": "ok",
+      "confidence": 1.0,
+      "match": true
+    }
+  ]
+}

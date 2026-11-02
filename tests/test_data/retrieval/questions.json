@@ -1,0 +1,14 @@
+[
+  {"q": "Which container checks the Chroma auth token?", "expect": "chroma-gate"},
+  {"q": "What protects the vector database from other containers?", "expect": "chroma-gate"},
+  {"q": "What host port does the production API use?", "expect": "prod-ports"},
+  {"q": "Where can I open the chat dashboard in a browser?", "expect": "prod-ports"},
+  {"q": "How do I roll back Jev enforcement?", "expect": "jev-soft"},
+  {"q": "What is the difference between shadow and soft?", "expect": "jev-soft"},
+  {"q": "How long can a task sent to Grok be?", "expect": "grok-handoff"},
+  {"q": "Where does a delegated job write its answer?", "expect": "grok-handoff"},
+  {"q": "Which env file holds the OpenRouter and Copilot keys for chat?", "expect": "gateway-keys"},
+  {"q": "How do I go back to the previous release?", "expect": "deploy-rollback"},
+  {"q": "How do I connect Cursor to Hermes?", "expect": "mcp-cursor"},
+  {"q": "Can the assistant erase a stored note by itself?", "expect": "memory-files"}
+]

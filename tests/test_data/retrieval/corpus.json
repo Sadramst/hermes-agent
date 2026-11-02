@@ -1,0 +1,42 @@
+[
+  {
+    "id": "chroma-gate",
+    "source": "docs/architecture/overview.md",
+    "text": "chroma-gate is the lock in front of the document database. It checks the CHROMA_AUTH_TOKEN bearer header, then forwards the request to chromadb. It is the only container that can open chromadb, and it publishes no host port. hermes-agent calls http://chroma-gate:8000."
+  },
+  {
+    "id": "prod-ports",
+    "source": "docs/deployment/ubuntu-server.md",
+    "text": "Production publishes host port 8569 for the Python API, mapped to container port 8080. The Nous dashboard listens on 9119 for the website and 8642 for its API. Development publishes the API on 8080 and Chroma on 8000. Production keeps Chroma off the host."
+  },
+  {
+    "id": "jev-soft",
+    "source": "docs/architecture/jev-system-one.md",
+    "text": "HERMES_JEV_MODE accepts off, shadow, or soft. Shadow logs each judgment and changes nothing. Soft enforces the packs: it filters passages, withholds a flagged reply, and holds tool calls. To roll back, set HERMES_JEV_MODE=shadow and redeploy."
+  },
+  {
+    "id": "grok-handoff",
+    "source": "docs/architecture/grok-hermes.md",
+    "text": "delegate_to_grok hands one task to Grok when HERMES_GROK_HANDOFF is on. The task is capped at 2000 characters. Hermes posts the handoff id and task to the webhook, which must be https and end in /v1/channels/hermes/task. The result comes back through MCP remember under the key grok-result-<handoffId>."
+  },
+  {
+    "id": "gateway-keys",
+    "source": "docs/architecture/overview.md",
+    "text": "Paid provider keys for the browser chat live in the gitignored file docker/env/.env.gateway. Compose loads that file on the hermes-gateway container only, so the Python API never receives those keys."
+  },
+  {
+    "id": "deploy-rollback",
+    "source": "docs/deployment/docker.md",
+    "text": "To deploy a release, pull the image tag from GHCR and run docker/scripts/deploy.sh prod. To roll back, unset IMAGE_TAG or set it to the previous version, then run deploy.sh prod again. The healthcheck polls GET /health until the container reports ok."
+  },
+  {
+    "id": "mcp-cursor",
+    "source": "docs/architecture/cursor-account.md",
+    "text": "Cursor connects to the Hermes API at /mcp when HERMES_MCP_ENABLED is on. The server definition lives in the user's ~/.cursor/mcp.json with the bearer token, never in a committed repo file. A process-wide cap of 60 requests per minute answers 429."
+  },
+  {
+    "id": "memory-files",
+    "source": "docs/architecture/current.md",
+    "text": "Memory is one file per key under the memory directory, mounted at /app/storage/memory in production. Keys start with a letter or digit and may contain dots, dashes, and underscores. delete_memory always asks a person and never runs on its own."
+  }
+]

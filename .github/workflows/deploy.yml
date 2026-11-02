@@ -1,0 +1,50 @@
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to render
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Provide a render-only production env file
+        if: inputs.environment == 'prod'
+        run: |
+          if [[ ! -f docker/env/.env.prod ]]; then
+            printf '%s\n' \
+              'HERMES_ENV=prod' \
+              'HERMES_HOST=0.0.0.0' \
+              'HERMES_PORT=8080' \
+              'HERMES_LOG_LEVEL=INFO' \
+              'HERMES_MEMORY_DIR=/app/storage/memory' \
+              'HERMES_SKILLS_DIR=/app/storage/skills' \
+              'CHROMA_HOST=chroma-gate' \
+              'CHROMA_PORT=8000' \
+              'CHROMA_AUTH_TOKEN=ci-render-token-01' \
+              'HERMES_API_TOKEN=ci-render-token-02' \
+              'HERMES_MODEL_BASE_URL=https://models.example/v1' \
+              'HERMES_MODEL_NAME=ci-model' \
+              'HERMES_MODEL_API_KEY=ci-render-token-03' \
+              'GHCR_OWNER=ci-owner' \
+              'IMAGE_TAG=ci' \
+              'CHROMA_IMAGE=chromadb/chroma:1.0.0' \
+              > docker/env/.env.prod
+          fi
+          if [[ ! -f docker/env/.env.agent ]]; then
+            cp docker/env/.env.agent.example docker/env/.env.agent
+          fi
+
+      - name: Validate Compose file
+        run: docker compose --env-file docker/env/.env.${{ inputs.environment }} -f docker/docker-compose.${{ inputs.environment }}.yml config

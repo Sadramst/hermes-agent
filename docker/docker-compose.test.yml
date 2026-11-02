@@ -1,0 +1,76 @@
+name: hermes-test
+
+services:
+  hermes-agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    image: ghcr.io/${GHCR_OWNER:-local}/hermes-agent:${IMAGE_TAG:-test}
+    env_file:
+      - env/.env.test
+    environment:
+      HERMES_ENV: test
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+    volumes:
+      - type: tmpfs
+        target: /app/storage/memory
+      - type: tmpfs
+        target: /app/storage/skills
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    networks:
+      - hermes-net
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: "no"
+
+  hermes-tests:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: test
+    image: ghcr.io/${GHCR_OWNER:-local}/hermes-agent:${IMAGE_TAG:-test}-tests
+    env_file:
+      - env/.env.test
+    environment:
+      HERMES_ENV: test
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+    command: ["-q", "-m", "not integration"]
+    depends_on:
+      hermes-agent:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    networks:
+      - hermes-net
+    restart: "no"
+
+  chromadb:
+    image: ${CHROMA_IMAGE:-chromadb/chroma:1.0.0}
+    volumes:
+      - type: tmpfs
+        target: /data
+    networks:
+      - hermes-net
+    # chromadb/chroma:1.0.0 is a Rust image. It has no python or curl, and it persists at /data.
+    healthcheck:
+      test: ["CMD", "/usr/lib/apt/apt-helper", "download-file", "http://127.0.0.1:8000/api/v2/heartbeat", "/tmp/chroma-heartbeat"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
+    restart: "no"
+
+networks:
+  hermes-net:
+    name: hermes-test-net

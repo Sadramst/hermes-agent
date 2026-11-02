@@ -1,0 +1,118 @@
+name: hermes-prod
+
+services:
+  hermes-agent:
+    image: ghcr.io/${GHCR_OWNER:?GHCR_OWNER is required}/hermes-agent:${IMAGE_TAG:?IMAGE_TAG is required}
+    env_file:
+      - env/.env.prod
+      - env/.env.agent
+    environment:
+      HERMES_ENV: prod
+      CHROMA_HOST: chroma-gate
+      CHROMA_PORT: "8000"
+      CHROMA_AUTH_TOKEN: ${CHROMA_AUTH_TOKEN:?CHROMA_AUTH_TOKEN is required}
+      HERMES_API_TOKEN: ${HERMES_API_TOKEN:?HERMES_API_TOKEN is required}
+      HERMES_MODEL_BASE_URL: ${HERMES_MODEL_BASE_URL:?HERMES_MODEL_BASE_URL is required}
+      HERMES_MODEL_NAME: ${HERMES_MODEL_NAME:?HERMES_MODEL_NAME is required}
+      HERMES_MODEL_API_KEY: ${HERMES_MODEL_API_KEY:?HERMES_MODEL_API_KEY is required}
+    ports:
+      - "8569:8080"
+    volumes:
+      - hermes_memory:/app/storage/memory
+      - hermes_skills:/app/storage/skills
+    depends_on:
+      chroma-gate:
+        condition: service_healthy
+    networks:
+      - hermes-net
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    pull_policy: always
+
+  chromadb:
+    image: ${CHROMA_IMAGE:-chromadb/chroma:1.0.0}
+    environment:
+      CHROMA_AUTH_TOKEN: ${CHROMA_AUTH_TOKEN:?CHROMA_AUTH_TOKEN is required}
+    volumes:
+      - chroma_data:/data
+    networks:
+      - chroma-net
+    # chromadb/chroma:1.0.0 is a Rust image. It has no python or curl, and it persists at /data.
+    healthcheck:
+      test: ["CMD", "/usr/lib/apt/apt-helper", "download-file", "http://127.0.0.1:8000/api/v2/heartbeat", "/tmp/chroma-heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  chroma-gate:
+    image: ghcr.io/${GHCR_OWNER:?GHCR_OWNER is required}/hermes-agent:${IMAGE_TAG:?IMAGE_TAG is required}
+    entrypoint: ["python3", "-m", "services.chroma_gate"]
+    environment:
+      CHROMA_AUTH_TOKEN: ${CHROMA_AUTH_TOKEN:?CHROMA_AUTH_TOKEN is required}
+      CHROMA_UPSTREAM_HOST: chromadb
+      CHROMA_UPSTREAM_PORT: "8000"
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    networks:
+      - hermes-net
+      - chroma-net
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import os,urllib.request; token=os.environ['CHROMA_AUTH_TOKEN']; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8000/api/v2/heartbeat', headers={'Authorization':'Bearer '+token}), timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    pull_policy: always
+
+  hermes-gateway:
+    image: ${HERMES_GATEWAY_IMAGE:-nousresearch/hermes-agent:latest}
+    command: ["gateway", "run"]
+    env_file:
+      - env/.env.prod
+      - path: env/.env.gateway
+        required: false
+    environment:
+      HERMES_DASHBOARD: "1"
+      HERMES_DASHBOARD_HOST: 0.0.0.0
+      HERMES_DASHBOARD_PORT: "9119"
+      # Nous gateway providers. Values live in docker/env/.env.gateway.
+      # An empty value is passed through and hides the same key in /opt/data/.env.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-${GEMINI_API_KEY:-}}
+      COPILOT_GITHUB_TOKEN: ${COPILOT_GITHUB_TOKEN:-${GITHUB_COPILOT_TOKEN:-}}
+    ports:
+      - "8642:8642"
+      - "9119:9119"
+    volumes:
+      - hermes_gateway:/opt/data
+    networks:
+      - hermes-net
+    restart: unless-stopped
+
+networks:
+  hermes-net:
+    name: hermes-prod-net
+  chroma-net:
+    name: hermes-prod-chroma-net
+
+volumes:
+  hermes_memory:
+    name: hermes-prod-memory
+  hermes_skills:
+    name: hermes-prod-skills
+  chroma_data:
+    name: hermes-prod-chroma
+  hermes_gateway:
+    name: hermes-prod-gateway

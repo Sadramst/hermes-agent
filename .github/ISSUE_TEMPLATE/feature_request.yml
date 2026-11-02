@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a change to the agent, storage, or deployment
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Tests that should lock the change
+    validations:
+      required: true

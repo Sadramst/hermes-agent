@@ -1,0 +1,16 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.env.local
+docker/env/*.local
+docker/env/.env.prod
+docker/env/.env.agent
+docker/env/.env.gateway
+*.log
+.DS_Store
+Thumbs.db

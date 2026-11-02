@@ -1,0 +1,1 @@
+Host directory for persistent agent memory in development. Named volume `hermes-prod-memory` replaces this bind mount in production.
