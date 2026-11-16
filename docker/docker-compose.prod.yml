@@ -5,11 +5,13 @@ services:
     image: ghcr.io/${GHCR_OWNER:?GHCR_OWNER is required}/hermes-agent:${IMAGE_TAG:?IMAGE_TAG is required}
     env_file:
       - env/.env.prod
-      - env/.env.agent
     environment:
       HERMES_ENV: prod
       CHROMA_HOST: chroma-gate
       CHROMA_PORT: "8000"
+      HERMES_PROFILE_DIR: /app/gateway
+      HERMES_TIMEZONE: ${HERMES_TIMEZONE:-UTC}
+      HERMES_PROVIDER_AUTH_MODE: ${HERMES_PROVIDER_AUTH_MODE:-api_key}
       CHROMA_AUTH_TOKEN: ${CHROMA_AUTH_TOKEN:?CHROMA_AUTH_TOKEN is required}
       HERMES_API_TOKEN: ${HERMES_API_TOKEN:?HERMES_API_TOKEN is required}
       HERMES_MODEL_BASE_URL: ${HERMES_MODEL_BASE_URL:?HERMES_MODEL_BASE_URL is required}
@@ -86,8 +88,10 @@ services:
       HERMES_DASHBOARD: "1"
       HERMES_DASHBOARD_HOST: 0.0.0.0
       HERMES_DASHBOARD_PORT: "9119"
-      # Nous gateway providers. Values live in docker/env/.env.gateway.
-      # An empty value is passed through and hides the same key in /opt/data/.env.
+      TZ: ${HERMES_TIMEZONE:-UTC}
+      # Nous gateway providers & Telegram tokens live in docker/env/.env.gateway (or /opt/data/.env).
+      # Only uncommented values in .env.gateway are injected for Telegram/Anthropic/OpenAI so
+      # interactive `hermes gateway setup` and `hermes model` OAuth tokens in /opt/data/.env are never hidden.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-${GEMINI_API_KEY:-}}

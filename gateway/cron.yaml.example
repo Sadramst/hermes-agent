@@ -1,0 +1,39 @@
+# Example scheduled routines for Sadra's Telegram personal assistant (hermes-gateway).
+# Create or inspect cron jobs interactively inside `hermes-gateway` (`hermes cron` / Telegram chat),
+# adapting schedules to your active timezone (default UTC+08:00 / Asia/Singapore).
+
+routines:
+  - name: morning-briefing
+    schedule: "0 8 * * 1-5"
+    channel: telegram
+    prompt: >
+      Good morning check-in for Sadra. Call `hermes-api` `current_time`, check `list_memories`
+      for `goal.` and `work.` keys, and send a concise morning briefing: today's date, top 3
+      priorities, open engineering/VPS items, and one focus reminder.
+
+  - name: evening-consolidation
+    schedule: "30 21 * * *"
+    channel: telegram
+    prompt: >
+      Evening wrap-up for Sadra. Ask briefly what was completed today, any new decisions or
+      financial/personal notes worth saving to `hermes-api` (`remember` / `save_document`),
+      and suggest tomorrow's #1 focus task.
+
+  - name: weekly-review-and-finance-checkin
+    schedule: "0 10 * * 0"
+    channel: telegram
+    prompt: >
+      Sunday weekly review for Sadra. Review `goal.`, `habit.`, and `finance.` keys in
+      `hermes-api` (`list_memories` + `recall`). Summarize weekly progress, cashflow/budget
+      check-in items to update, and propose next week's engineering, personal growth, and
+      financial priorities.
+
+  - name: weekly-ops-health
+    schedule: "0 9 * * 1"
+    channel: telegram
+    prompt: >
+      Check `ops.` memory keys and `search_documents` for VPS maintenance notes. Remind Sadra
+      to verify `api.hermes.sadramst.dev/health`, disk space (`cleanup-disk.sh --dry-run`),
+      and container updates (including checking if Nous Research released official Gemini
+      Subscription OAuth in `nousresearch/hermes-agent`).
+

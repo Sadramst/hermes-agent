@@ -17,14 +17,12 @@ SKILLS_PREAMBLE = (
 def assemble_completion_prompt(
     prompt: str,
     skills: list[Skill],
-    suggestion: str | None = None,
     context: str | None = None,
 ) -> str:
-    """Return one prompt: a skill index, optional advisory and context blocks, then the request."""
+    """Return one prompt: a skill index, optional RAG context block, then the request."""
     skills_block = _skills_block(skills)
-    advisory = f"\n\n{suggestion}" if suggestion else ""
     retrieved = f"\n\n{context}" if context else ""
-    return f"{skills_block}{advisory}{retrieved}\n\n{REQUEST_HEADER}\n{prompt}"
+    return f"{skills_block}{retrieved}\n\n{REQUEST_HEADER}\n{prompt}"
 
 
 def _skills_block(skills: list[Skill]) -> str:

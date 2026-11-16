@@ -51,9 +51,9 @@ def test_fusion_lifts_an_exact_term_match_and_keeps_order_on_ties() -> None:
     matches = [
         {"id": "a", "text": "general notes about servers"},
         {"id": "b", "text": "unrelated text"},
-        {"id": "c", "text": "set HERMES_JEV_MODE to soft"},
+        {"id": "c", "text": "set HERMES_RAG_MODE to soft"},
     ]
-    assert [m["id"] for m in fuse("what does HERMES_JEV_MODE do", matches)] == ["c", "a", "b"]
+    assert [m["id"] for m in fuse("what does HERMES_RAG_MODE do", matches)] == ["c", "a", "b"]
     assert [m["id"] for m in fuse("nothing shared", matches)] == ["a", "b", "c"]
     assert fuse("", matches) == matches
 

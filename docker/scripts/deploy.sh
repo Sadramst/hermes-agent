@@ -17,11 +17,6 @@ COMPOSE="${ROOT}/docker/docker-compose.${ENV_NAME}.yml"
 ENV_FILE="${ROOT}/docker/env/.env.${ENV_NAME}"
 
 if [[ "${ENV_NAME}" == "prod" ]]; then
-  AGENT_ENV="${ROOT}/docker/env/.env.agent"
-  if [[ ! -f "${AGENT_ENV}" ]]; then
-    cp "${ROOT}/docker/env/.env.agent.example" "${AGENT_ENV}"
-  fi
-  chmod 600 "${AGENT_ENV}"
   GATEWAY_ENV="${ROOT}/docker/env/.env.gateway"
   if [[ ! -f "${GATEWAY_ENV}" ]]; then
     cp "${ROOT}/docker/env/.env.gateway.example" "${GATEWAY_ENV}"

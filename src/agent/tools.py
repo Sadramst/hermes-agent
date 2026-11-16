@@ -1,45 +1,45 @@
 """Allowlisted tool runner and OpenAI-compatible tool definitions for the autonomous loop.
 
-Hermes code checks the name and the argument keys, then runs the tool.
-Irreversible tools ask a person and do not run. This module does not call Jev.
+Hermes checks tool names and exact argument keys, then executes read/write actions.
+Irreversible tools (`delete_memory`) pause for human confirmation (`ask_person`).
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
-from agent.decisions.policy import IRREVERSIBLE_TOOLS
 from services.chroma import ChromaError
 from services.embedder import EmbeddingError
-from services.grok import GrokError, MAX_TASK_CHARS, REJECTED_TEXT
+from utils.time import now_report
 
 MAX_STEPS = 4
+IRREVERSIBLE_TOOLS: frozenset[str] = frozenset({"delete_memory"})
 
 ASK_TEXT = "This tool needs a person before it can run."
-GATE_TEXT = "This tool call was not run."
 UNKNOWN_TEXT = "This tool is not on the allowlist."
 ARGUMENTS_TEXT = "These arguments are outside the allowlist."
 MISSING_TEXT = "No record is stored for that key."
 EMPTY_SKILLS = "No skills are loaded."
 MISSING_SKILL = "No skill is loaded with that name."
+EMPTY_MEMORIES = "No memory records matched."
 NO_DOCUMENTS = "No documents matched."
 NO_MEMORIES = "No memory records matched."
 SEARCH_FAILED = "Search failed."
 SAVE_FAILED = "Document save failed."
-OFF_TEXT = "Grok handoff is off."
-TASK_TEXT = "This task is outside the allowlist."
 
 # Argument keys Hermes may pass. Values stay out of logs.
 TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
     "recall": frozenset({"key"}),
     "remember": frozenset({"key", "value"}),
+    "list_memories": frozenset({"prefix"}),
     "list_skills": frozenset(),
     "read_skill": frozenset({"name"}),
     "search_documents": frozenset({"q"}),
     "save_document": frozenset({"id", "text"}),
     "search_memory": frozenset({"q"}),
+    "current_time": frozenset(),
     "delete_memory": frozenset({"key"}),
-    "delegate_to_grok": frozenset({"task"}),
 }
 
 AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
@@ -60,14 +60,32 @@ AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
         "type": "function",
         "function": {
             "name": "remember",
-            "description": "Save a durable fact or note into Hermes persistent memory under a stable key.",
+            "description": "Save a durable fact or note into Hermes persistent memory under a stable dotted key.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "key": {"type": "string", "description": "Short alphanumeric/dash memory key."},
+                    "key": {"type": "string", "description": "Short dotted memory key (e.g. 'goal.q4', 'finance.runway')."},
                     "value": {"type": "string", "description": "Fact or note text to store."},
                 },
                 "required": ["key", "value"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_memories",
+            "description": "List stored memory keys, optionally filtered by key prefix (e.g. 'finance.', 'goal.', or '' for all).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prefix": {
+                        "type": "string",
+                        "description": "Optional prefix such as 'finance.' or 'goal.'; pass '' for all keys.",
+                    }
+                },
+                "required": ["prefix"],
                 "additionalProperties": False,
             },
         },
@@ -139,6 +157,18 @@ AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "current_time",
+            "description": "Return the current date, local time in the configured timezone, UTC ISO timestamp, weekday, and ISO week.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -155,43 +185,24 @@ class ToolResult:
     output: str
 
 
-def run_calls(
-    agent: object,
-    calls: list[ToolCall],
-    holds: list[str] | None = None,
-) -> list[ToolResult]:
-    """Run proposed calls in order. A batch past the step limit runs nothing.
-
-    `holds` applies only to calls the allowlist would run. Irreversible tools
-    still ask a person. Unknown names and bad arguments stay refused.
-    """
+def run_calls(agent: object, calls: list[ToolCall]) -> list[ToolResult]:
+    """Run allowlisted calls in order. A batch past MAX_STEPS runs nothing."""
     if len(calls) > MAX_STEPS:
         raise ValueError(f"A tool run is limited to {MAX_STEPS} calls")
-    if holds is not None and len(holds) != len(calls):
-        raise ValueError("Tool holds do not match the batch")
     results: list[ToolResult] = []
-    for index, call in enumerate(calls):
-        result = _stopped(agent, call)
-        if result is None and holds is not None and holds[index] == "ask_person":
-            result = ToolResult(call.name, "ask_person", ASK_TEXT)
-        elif result is None and holds is not None and holds[index] == "refused":
-            result = ToolResult(call.name, "refused", GATE_TEXT)
-        elif result is None:
-            result = _execute(agent, call)
+    for call in calls:
+        result = _stopped(agent, call) or _execute(agent, call)
         _log(agent, result)
         results.append(result)
     return results
 
 
 def _stopped(agent: object, call: ToolCall) -> ToolResult | None:
-    """Return a result when policy stops the call before it can run."""
     expected = TOOL_ARGUMENTS.get(call.name)
     if expected is None:
         return ToolResult(call.name, "refused", UNKNOWN_TEXT)
     if not _arguments_ok(call.arguments, expected):
         return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
-    if call.name == "delegate_to_grok":
-        return _handoff_gate(agent, call)
     if call.name in IRREVERSIBLE_TOOLS:
         if not _key_ok(agent, call.arguments.get("key", "")):
             return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
@@ -209,33 +220,15 @@ def _stopped(agent: object, call: ToolCall) -> ToolResult | None:
     return None
 
 
-def _handoff_gate(agent: object, call: ToolCall) -> ToolResult | None:
-    task = call.arguments["task"]
-    if not task.strip() or len(task) > MAX_TASK_CHARS:
-        return ToolResult(call.name, "refused", TASK_TEXT)
-    mode = _handoff_mode(agent)
-    if mode == "ask":
-        return ToolResult(call.name, "ask_person", ASK_TEXT)
-    if mode != "on":
-        return ToolResult(call.name, "refused", OFF_TEXT)
-    return None
-
-
-def _handoff_mode(agent: object) -> str:
-    settings = getattr(agent, "settings", None)
-    mode = getattr(settings, "grok_handoff", "off")
-    if mode not in {"off", "ask", "on"}:
-        return "off"
-    return mode
-
-
 def _execute(agent: object, call: ToolCall) -> ToolResult:
-    if call.name == "delegate_to_grok":
-        return _delegate(agent, call)
     if call.name == "list_skills":
         return ToolResult(call.name, "ran", _skills(agent))
     if call.name == "read_skill":
         return ToolResult(call.name, "ran", _read_skill(agent, call.arguments["name"]))
+    if call.name == "list_memories":
+        return ToolResult(call.name, "ran", _list_memories(agent, call.arguments["prefix"]))
+    if call.name == "current_time":
+        return ToolResult(call.name, "ran", _current_time(agent))
     if call.name == "search_documents":
         return ToolResult(call.name, "ran", _search_documents(agent, call.arguments["q"]))
     if call.name == "save_document":
@@ -266,19 +259,6 @@ def _key_ok(agent: object, key: str) -> bool:
     return True
 
 
-def _delegate(agent: object, call: ToolCall) -> ToolResult:
-    send = getattr(agent, "delegate_to_grok", None)
-    if not callable(send):
-        return ToolResult(call.name, "refused", REJECTED_TEXT)
-    try:
-        handoff_id = send(call.arguments["task"])
-    except GrokError:
-        return ToolResult(call.name, "refused", REJECTED_TEXT)
-    if not isinstance(handoff_id, str) or not handoff_id:
-        return ToolResult(call.name, "refused", REJECTED_TEXT)
-    return ToolResult(call.name, "ran", handoff_id)
-
-
 def _recall(agent: object, key: str) -> str:
     recall = getattr(agent, "recall")
     try:
@@ -292,6 +272,29 @@ def _remember(agent: object, key: str, value: str) -> str:
     remember = getattr(agent, "remember")
     kept = remember(key, value)
     return "stored" if kept else "skipped"
+
+
+def _list_memories(agent: object, prefix: str) -> str:
+    list_fn = getattr(agent, "list_memories", None)
+    if callable(list_fn):
+        keys = list_fn(prefix)
+    else:
+        memory = getattr(agent, "memory", None)
+        keys_fn = getattr(memory, "keys", None)
+        if not callable(keys_fn):
+            return EMPTY_MEMORIES
+        cleaned = prefix.strip()
+        keys = [k for k in keys_fn() if not cleaned or k.startswith(cleaned)]
+    return "\n".join(keys[:50]) if keys else EMPTY_MEMORIES
+
+
+def _current_time(agent: object) -> str:
+    now_fn = getattr(agent, "current_time", None)
+    if callable(now_fn):
+        return json.dumps(now_fn(), sort_keys=True)
+    settings = getattr(agent, "settings", None)
+    tz_name = getattr(settings, "timezone", "UTC")
+    return json.dumps(now_report(tz_name), sort_keys=True)
 
 
 def _skills(agent: object) -> str:
@@ -373,7 +376,6 @@ def _search_memory(agent: object, query: str) -> str:
             pass
         except (ChromaError, EmbeddingError):
             return SEARCH_FAILED
-    # Fallback to local file keyword search when HERMES_MEMORY_INDEX is off
     memory = getattr(agent, "memory", None)
     keys_fn = getattr(memory, "keys", None)
     read_fn = getattr(memory, "read", None)

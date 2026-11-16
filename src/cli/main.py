@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from agent.core import HermesAgent
 from agent.tools import MAX_STEPS
@@ -36,6 +37,17 @@ def main(argv: list[str] | None = None) -> int:
         "reindex-memory",
         help="Index every memory file into the memory collection (HERMES_MEMORY_INDEX=on)",
     )
+    subcommands.add_parser(
+        "providers",
+        help="Print model provider configuration and Gemini/OAuth readiness",
+    )
+    mem_list = subcommands.add_parser("memories", help="List stored memory keys")
+    mem_list.add_argument("--prefix", default="", help="Optional key prefix filter")
+    mem_put = subcommands.add_parser("remember", help="Store a memory record")
+    mem_put.add_argument("key", help="Stable dotted memory key")
+    mem_put.add_argument("value", help="Value text to store")
+    mem_get = subcommands.add_parser("recall", help="Read a memory record by key")
+    mem_get.add_argument("key", help="Memory key to read")
     args = parser.parse_args(argv)
     agent = HermesAgent(load_settings())
 
@@ -43,6 +55,27 @@ def main(argv: list[str] | None = None) -> int:
         report = agent.health()
         print(json.dumps(report, sort_keys=True))
         return 0
+
+    if args.command == "providers":
+        print(json.dumps(agent.provider_status(), sort_keys=True))
+        return 0
+
+    if args.command == "memories":
+        print(json.dumps({"keys": agent.list_memories(args.prefix)}, sort_keys=True))
+        return 0
+
+    if args.command == "remember":
+        stored = agent.remember(args.key, args.value)
+        print(json.dumps({"key": args.key, "stored": stored}, sort_keys=True))
+        return 0
+
+    if args.command == "recall":
+        try:
+            print(agent.recall(args.key))
+            return 0
+        except FileNotFoundError:
+            print("No record is stored for that key.", file=sys.stderr)
+            return 1
 
     if args.command == "run":
         print(json.dumps(agent.run_agent(args.prompt, max_steps=args.max_steps), sort_keys=True))

@@ -42,9 +42,6 @@ jobs:
               'CHROMA_IMAGE=chromadb/chroma:1.0.0' \
               > docker/env/.env.prod
           fi
-          if [[ ! -f docker/env/.env.agent ]]; then
-            cp docker/env/.env.agent.example docker/env/.env.agent
-          fi
 
       - name: Validate Compose file
         run: docker compose --env-file docker/env/.env.${{ inputs.environment }} -f docker/docker-compose.${{ inputs.environment }}.yml config

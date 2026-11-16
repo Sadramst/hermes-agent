@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from utils.time import check_timezone
+
 
 class SettingsError(ValueError):
     """Raised when Hermes configuration is missing or invalid."""
@@ -18,16 +20,27 @@ ENV_DEFAULT_DIRS: dict[str, tuple[str, str]] = {
     "test": ("/tmp/hermes-test/memory", "/tmp/hermes-test/skills"),
     "prod": ("/app/storage/memory", "/app/storage/skills"),
 }
+ENV_DEFAULT_PROFILE_DIRS: dict[str, str] = {
+    "dev": "gateway",
+    "test": "/tmp/hermes-test/gateway",
+    "prod": "/app/gateway",
+}
+PROVIDER_AUTH_MODES = {
+    "api_key",
+    "openrouter",
+    "google_ai_studio",
+    "nous_portal",
+    "claude_oauth",
+    "chatgpt_oauth",
+    "gemini_subscription_pending",
+}
 
 LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 REQUIRED_VARIABLES = ("HERMES_ENV", "CHROMA_HOST")
 MIN_CHROMA_TOKEN_LENGTH = 16
 MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 MODEL_VARIABLES = ("HERMES_MODEL_BASE_URL", "HERMES_MODEL_NAME", "HERMES_MODEL_API_KEY")
-JEV_MODES = {"off", "shadow", "soft"}
 MCP_MODES = {"off", "on"}
-GROK_HANDOFF_MODES = {"off", "ask", "on"}
-GROK_HANDOFF_PATH = "/v1/channels/hermes/task"
 MAX_MCP_HOSTS = 8
 _MCP_HOST = re.compile(
     r"([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
@@ -41,9 +54,6 @@ COLLECTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{1,61}[A-Za-z0-9]")
 # Hash vectors and provider vectors have different dimensions, so each gets its own collection.
 HASH_COLLECTIONS = ("hermes-documents", "hermes-memory")
 PROVIDER_COLLECTIONS = ("hermes-documents-v2", "hermes-memory-v2")
-JEV_MODEL_DEFAULT = "jev-1.13.0"
-JEV_BASE_URL_DEFAULT = "https://api.typesafe.ai/v1"
-JEV_ALIASES = {"jev-latest", "jev-preview"}
 
 
 @dataclass(frozen=True)
@@ -58,20 +68,11 @@ class Settings:
     model_base_url: str | None
     model_name: str | None
     model_api_key: str | None
-    model_small: str | None
     log_level: str
     hermes_host: str
     hermes_port: int
-    jev_mode: str
-    jev_api_key: str | None
-    jev_base_url: str
-    jev_model: str
     mcp_enabled: bool
     mcp_allowed_hosts: tuple[str, ...]
-    grok_handoff: str
-    grok_webhook_url: str | None
-    grok_alias_token: str | None
-    grok_handoff_secret: str | None
     embed_base_url: str | None = None
     embed_model: str | None = None
     embed_api_key: str | None = None
@@ -80,6 +81,9 @@ class Settings:
     memory_collection: str = HASH_COLLECTIONS[1]
     rag_mode: str = "off"
     memory_index: bool = False
+    profile_dir: str = ""
+    timezone: str = "UTC"
+    provider_auth_mode: str = "api_key"
 
 
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
@@ -95,21 +99,20 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         raise SettingsError(f"Invalid HERMES_ENV: {hermes_env}")
 
     default_memory, default_skills = ENV_DEFAULT_DIRS[hermes_env]
+    default_profile = ENV_DEFAULT_PROFILE_DIRS[hermes_env]
     token = str(source.get("CHROMA_AUTH_TOKEN", "")).strip()
     if hermes_env == "prod" and not chroma_token_usable(token):
         raise SettingsError("CHROMA_AUTH_TOKEN is required when HERMES_ENV is prod")
     api_token = _optional_secret(source, "HERMES_API_TOKEN", hermes_env == "prod")
     model_base_url, model_name, model_api_key = _model_provider(source, hermes_env == "prod")
-    raw_small = str(source.get("HERMES_MODEL_SMALL", "")).strip()
-    model_small = raw_small or None
     log_level = str(source.get("HERMES_LOG_LEVEL", "INFO")).strip().upper()
     if log_level not in LOG_LEVELS:
         raise SettingsError("Invalid HERMES_LOG_LEVEL")
-    jev_mode, jev_api_key, jev_base_url, jev_model = _jev(source)
     mcp_enabled, mcp_allowed_hosts = _mcp(source, api_token)
-    grok_handoff, grok_webhook_url, grok_alias_token, grok_handoff_secret = _grok(source)
     embed_base_url, embed_model, embed_api_key = _embedder(source)
     documents_collection, memory_collection = _collections(source, embed_model is not None)
+    timezone_name = _timezone(source)
+    provider_auth_mode = _provider_auth_mode(source)
 
     return Settings(
         hermes_env=hermes_env,
@@ -122,20 +125,11 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         model_base_url=model_base_url,
         model_name=model_name,
         model_api_key=model_api_key,
-        model_small=model_small,
         log_level=log_level,
         hermes_host=str(source.get("HERMES_HOST", "0.0.0.0")).strip() or "0.0.0.0",
         hermes_port=_port(source, "HERMES_PORT", 8080),
-        jev_mode=jev_mode,
-        jev_api_key=jev_api_key,
-        jev_base_url=jev_base_url,
-        jev_model=jev_model,
         mcp_enabled=mcp_enabled,
         mcp_allowed_hosts=mcp_allowed_hosts,
-        grok_handoff=grok_handoff,
-        grok_webhook_url=grok_webhook_url,
-        grok_alias_token=grok_alias_token,
-        grok_handoff_secret=grok_handoff_secret,
         embed_base_url=embed_base_url,
         embed_model=embed_model,
         embed_api_key=embed_api_key,
@@ -144,6 +138,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         memory_collection=memory_collection,
         rag_mode=_choice(source, "HERMES_RAG_MODE", RAG_MODES),
         memory_index=_switch(source, "HERMES_MEMORY_INDEX"),
+        profile_dir=str(source.get("HERMES_PROFILE_DIR", default_profile)).strip() or default_profile,
+        timezone=timezone_name,
+        provider_auth_mode=provider_auth_mode,
     )
 
 
@@ -177,7 +174,7 @@ def _model_provider(source: Mapping[str, str], required: bool) -> tuple[str | No
         raise SettingsError("Invalid HERMES_MODEL_API_KEY")
     if not MODEL_NAME.fullmatch(name):
         raise SettingsError("Invalid HERMES_MODEL_NAME")
-    return _model_base_url(base_url), name, api_key
+    return _base_url(base_url, "HERMES_MODEL_BASE_URL"), name, api_key
 
 
 def _embedder(source: Mapping[str, str]) -> tuple[str | None, str | None, str | None]:
@@ -224,10 +221,6 @@ def _switch(source: Mapping[str, str], name: str) -> bool:
     return _choice(source, name, MEMORY_INDEX_MODES) == "on"
 
 
-def _model_base_url(value: str) -> str:
-    return _base_url(value, "HERMES_MODEL_BASE_URL")
-
-
 def _base_url(value: str, name: str) -> str:
     normalized = value.rstrip("/")
     parsed = urlparse(normalized)
@@ -236,24 +229,6 @@ def _base_url(value: str, name: str) -> str:
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise SettingsError(f"Invalid {name}")
     return normalized
-
-
-def _jev(source: Mapping[str, str]) -> tuple[str, str | None, str, str]:
-    mode = str(source.get("HERMES_JEV_MODE", "off")).strip().lower() or "off"
-    if mode not in JEV_MODES:
-        raise SettingsError(f"Invalid HERMES_JEV_MODE: {mode}")
-    api_key = _optional_secret(source, "HERMES_JEV_API_KEY", required=False)
-    if mode != "off" and api_key is None:
-        raise SettingsError(f"HERMES_JEV_API_KEY is required when HERMES_JEV_MODE is {mode}")
-    raw_base = str(source.get("HERMES_JEV_BASE_URL", "")).strip()
-    base_url = _base_url(raw_base, "HERMES_JEV_BASE_URL") if raw_base else JEV_BASE_URL_DEFAULT
-    raw_model = str(source.get("HERMES_JEV_MODEL", "")).strip()
-    model = raw_model or JEV_MODEL_DEFAULT
-    if model in JEV_ALIASES:
-        raise SettingsError("HERMES_JEV_MODEL must be a pinned id")
-    if not MODEL_NAME.fullmatch(model):
-        raise SettingsError("Invalid HERMES_JEV_MODEL")
-    return mode, api_key, base_url, model
 
 
 def _mcp(source: Mapping[str, str], api_token: str | None) -> tuple[bool, tuple[str, ...]]:
@@ -285,38 +260,6 @@ def _mcp_hosts(raw: str) -> tuple[str, ...]:
     return tuple(hosts)
 
 
-def _grok(source: Mapping[str, str]) -> tuple[str, str | None, str | None, str | None]:
-    mode = str(source.get("HERMES_GROK_HANDOFF", "off")).strip().lower() or "off"
-    if mode not in GROK_HANDOFF_MODES:
-        raise SettingsError(f"Invalid HERMES_GROK_HANDOFF: {mode}")
-    url = str(source.get("HERMES_GROK_WEBHOOK_URL", "")).strip()
-    alias = str(source.get("HERMES_GROK_ALIAS_TOKEN", "")).strip()
-    secret = str(source.get("HERMES_GROK_HANDOFF_SECRET", "")).strip()
-    if url:
-        url = _handoff_url(url)
-    if alias and not chroma_token_usable(alias):
-        raise SettingsError("Invalid HERMES_GROK_ALIAS_TOKEN")
-    if secret and not chroma_token_usable(secret):
-        raise SettingsError("Invalid HERMES_GROK_HANDOFF_SECRET")
-    if mode == "on" and not url:
-        raise SettingsError("HERMES_GROK_WEBHOOK_URL is required when HERMES_GROK_HANDOFF is on")
-    if mode == "on" and not alias:
-        raise SettingsError("HERMES_GROK_ALIAS_TOKEN is required when HERMES_GROK_HANDOFF is on")
-    if mode == "on" and not secret:
-        raise SettingsError("HERMES_GROK_HANDOFF_SECRET is required when HERMES_GROK_HANDOFF is on")
-    return mode, url or None, alias or None, secret or None
-
-
-def _handoff_url(value: str) -> str:
-    normalized = _base_url(value, "HERMES_GROK_WEBHOOK_URL")
-    parsed = urlparse(normalized)
-    path = parsed.path.rstrip("/")
-    # Exact /v1/channels/hermes/task, or Cursor alias .../engine/v1/channels/hermes/task
-    if parsed.scheme != "https" or not path.endswith(GROK_HANDOFF_PATH):
-        raise SettingsError("Invalid HERMES_GROK_WEBHOOK_URL")
-    return normalized
-
-
 def _port(source: Mapping[str, str], name: str, default: int) -> int:
     raw = str(source.get(name, str(default))).strip()
     try:
@@ -326,3 +269,18 @@ def _port(source: Mapping[str, str], name: str, default: int) -> int:
     if not 1 <= value <= 65535:
         raise SettingsError(f"Invalid {name}")
     return value
+
+
+def _timezone(source: Mapping[str, str]) -> str:
+    raw = str(source.get("HERMES_TIMEZONE") or source.get("TZ") or "UTC").strip() or "UTC"
+    try:
+        return check_timezone(raw)
+    except ValueError as exc:
+        raise SettingsError("Invalid HERMES_TIMEZONE") from exc
+
+
+def _provider_auth_mode(source: Mapping[str, str]) -> str:
+    raw = str(source.get("HERMES_PROVIDER_AUTH_MODE", "api_key")).strip().lower() or "api_key"
+    if raw not in PROVIDER_AUTH_MODES:
+        raise SettingsError(f"Invalid HERMES_PROVIDER_AUTH_MODE: {raw}")
+    return raw

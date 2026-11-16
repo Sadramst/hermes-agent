@@ -5,14 +5,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import agent.core as core
 from agent.context import CONTEXT_HEADER
 from agent.core import HermesAgent
 from agent.prompt import REQUEST_HEADER
 from api.app import create_app
 from chroma_fake import FakeChroma
 from services.chroma import ChromaError
-from services.jev import JevError
 from services.model import MAX_PROMPT_CHARS
 from utils.settings import load_settings
 
@@ -30,11 +28,6 @@ class _Model:
         return "answer [restore::0000]"
 
 
-class _FailingJev:
-    def evaluate(self, state: object, questions: dict[str, object]) -> object:
-        raise JevError("Jev request failed", 503)
-
-
 def _settings(tmp_path: Path, rag: str, **extra: str):
     values = {
         "HERMES_ENV": "test",
@@ -50,10 +43,10 @@ def _settings(tmp_path: Path, rag: str, **extra: str):
     return load_settings(values)
 
 
-def _agent(tmp_path: Path, rag: str, chroma: FakeChroma | None = None, **kwargs) -> tuple[HermesAgent, _Model, FakeChroma]:
+def _agent(tmp_path: Path, rag: str, chroma: FakeChroma | None = None) -> tuple[HermesAgent, _Model, FakeChroma]:
     store = chroma or FakeChroma()
     model = _Model()
-    agent = HermesAgent(_settings(tmp_path, rag), chroma_client=store, model_client=model, **kwargs)
+    agent = HermesAgent(_settings(tmp_path, rag), chroma_client=store, model_client=model)
     agent.save_document("restore", RUNBOOK, "docs/deployment/ubuntu-server.md")
     agent.save_document("lunch", "The office lunch order goes in on Fridays.")
     return agent, model, store
@@ -140,21 +133,3 @@ def test_a_long_prompt_is_searched_by_its_first_2000_characters(tmp_path: Path) 
     agent.complete("restore the Hermes stack " + "y" * 3_000)
     assert chroma.queries
     assert CONTEXT_HEADER in model.prompts[0]
-
-
-def test_soft_jev_guardrail_drops_flagged_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    screened: list[str] = []
-
-    def review(**kwargs: object) -> str:
-        screened.append(str(kwargs["text"]))
-        return "review"
-
-    monkeypatch.setattr(core, "_guard_screen", review)
-    settings = _settings(tmp_path, "soft", HERMES_JEV_MODE="soft", HERMES_JEV_API_KEY="fedcba9876543210")
-    chroma = FakeChroma()
-    agent = HermesAgent(settings, chroma_client=chroma, model_client=_Model(), jev_client=_FailingJev())
-    agent.save_document("restore", RUNBOOK)
-    block, sources = agent._retrieve_context("restore the Hermes stack", [], None)
-    assert block is None
-    assert sources == []
-    assert any(CONTEXT_HEADER in text for text in screened)

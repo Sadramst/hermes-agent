@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-from agent.decisions.skill_suggestion import suggestion_block
 from agent.prompt import (
     INDEX_DESCRIPTION_CHARS,
     NO_SKILLS,
@@ -18,12 +17,12 @@ def _skill(name: str, version: str, body: str) -> Skill:
     return Skill(name=name, version=version, path=Path(name) / "SKILL.md", body=body)
 
 
-def test_advisory_block_sits_between_the_index_and_the_request() -> None:
+def test_context_block_sits_between_the_index_and_the_request() -> None:
     skill = _skill("demo", "0.1.0", "# Purpose\n\nDemo skill for routing.\n")
-    block = suggestion_block("demo")
-    prompt = assemble_completion_prompt("status", [skill], block)
+    context = "## Context\n<passage label=\"doc::0000\">\nDetails\n</passage>"
+    prompt = assemble_completion_prompt("status", [skill], context)
     assert "- demo (0.1.0): Demo skill for routing." in prompt
-    assert prompt.index(block) < prompt.index(REQUEST_HEADER)
+    assert prompt.index(context) < prompt.index(REQUEST_HEADER)
     assert prompt.endswith(f"{REQUEST_HEADER}\nstatus")
 
 

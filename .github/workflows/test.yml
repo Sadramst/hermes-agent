@@ -24,6 +24,6 @@ jobs:
 
       - name: Shell syntax
         run: |
-          for script in docker/scripts/*.sh ci-cd/scripts/*.sh; do
+          for script in docker/scripts/*.sh; do
             bash -n "$script"
           done

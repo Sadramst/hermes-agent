@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 from agent.core import HermesAgent
-from agent.tools import ARGUMENTS_TEXT, EMPTY_SKILLS, MISSING_TEXT, TOOL_ARGUMENTS
+from agent.tools import ARGUMENTS_TEXT, EMPTY_MEMORIES, EMPTY_SKILLS, MISSING_TEXT, TOOL_ARGUMENTS
 from services.chroma import ChromaError
 from services.embedder import EmbeddingError
 from services.model import ModelError, ModelNotConfigured
@@ -14,10 +15,12 @@ MCP_TOOLS: dict[str, frozenset[str]] = {
     "list_skills": TOOL_ARGUMENTS["list_skills"],
     "recall": TOOL_ARGUMENTS["recall"],
     "remember": TOOL_ARGUMENTS["remember"],
+    "list_memories": frozenset({"prefix"}),
     "search_documents": frozenset({"q", "limit"}),
+    "save_document": frozenset({"id", "text", "source"}),
     "search_memory": frozenset({"q", "limit"}),
+    "current_time": TOOL_ARGUMENTS["current_time"],
     "complete": frozenset({"prompt"}),
-    "suggest_skill": frozenset({"request", "skills"}),
 }
 
 REFUSED_TEXT = "This tool is not on the MCP server."
@@ -30,22 +33,19 @@ MODEL_FAILED = "Model request failed"
 
 LIST_SKILLS = "List the skills Hermes has loaded."
 RECALL = "Read one Hermes memory record by key."
-REMEMBER = "Store one Hermes memory record. One-shot chatter may be skipped."
+REMEMBER = "Store one Hermes memory record under a stable dotted key."
+LIST_MEMORIES = "List stored Hermes memory keys, optionally filtered by prefix (e.g. 'finance.' or 'goal.')."
 SEARCH_DOCUMENTS = (
-    "Search documents Hermes has saved: runbooks, infrastructure notes, and reference text. "
+    "Search documents Hermes has saved: runbooks, personal notes, and reference text. "
     "Each result starts with a [label] line; cite that label when you use the passage."
 )
+SAVE_DOCUMENT = "Chunk, embed, and save a document into the Hermes ChromaDB knowledge base."
 SEARCH_MEMORY = (
     "Search Hermes memory records by meaning when you do not know the exact key. "
     "Each result names the key; call recall with it for the full record."
 )
-COMPLETE = "Ask Hermes for one completion. Hermes uses its own model, not Cursor's."
-SUGGEST_SKILL = (
-    "Ask Hermes which gateway skill fits the latest user request. "
-    "Pass the gateway's own skill names and short descriptions. "
-    "Returns JSON with available, line, suggested, reason, and model. "
-    "The line is advisory; the gateway model may ignore it."
-)
+CURRENT_TIME = "Return the current date, local time in Sadra's configured timezone, UTC ISO timestamp, and ISO week."
+COMPLETE = "Ask Hermes for one completion using its configured model."
 
 
 def call_tool(agent: HermesAgent, name: str, arguments: dict[str, object]) -> str:
@@ -54,12 +54,16 @@ def call_tool(agent: HermesAgent, name: str, arguments: dict[str, object]) -> st
         return REFUSED_TEXT
     if name == "search_documents":
         return _search(agent, arguments)
+    if name == "save_document":
+        return _save_document(agent, arguments)
     if name == "search_memory":
         return _search_memory(agent, arguments)
+    if name == "list_memories":
+        return _list_memories(agent, arguments)
+    if name == "current_time":
+        return _current_time(agent, arguments)
     if name == "complete":
         return _complete(agent, arguments)
-    if name == "suggest_skill":
-        return _suggest_skill(agent, arguments)
     if not _strings(arguments, MCP_TOOLS[name]):
         return ARGUMENTS_TEXT
     if name == "list_skills":
@@ -90,6 +94,43 @@ def _recall(agent: HermesAgent, key: str) -> str:
 
 def _remember(agent: HermesAgent, key: str, value: str) -> str:
     return "stored" if agent.remember(key, value) else "skipped"
+
+
+def _list_memories(agent: HermesAgent, arguments: dict[str, object]) -> str:
+    keys = set(arguments)
+    if not keys <= MCP_TOOLS["list_memories"]:
+        return ARGUMENTS_TEXT
+    prefix = arguments.get("prefix", "")
+    if not isinstance(prefix, str):
+        return ARGUMENTS_TEXT
+    found = agent.list_memories(prefix)
+    return "\n".join(found[:50]) if found else EMPTY_MEMORIES
+
+
+def _save_document(agent: HermesAgent, arguments: dict[str, object]) -> str:
+    keys = set(arguments)
+    if not {"id", "text"} <= keys or not keys <= MCP_TOOLS["save_document"]:
+        return ARGUMENTS_TEXT
+    doc_id = arguments["id"]
+    text = arguments["text"]
+    source = arguments.get("source", "")
+    if not isinstance(doc_id, str) or not isinstance(text, str) or not isinstance(source, str):
+        return ARGUMENTS_TEXT
+    try:
+        saved = agent.save_document(doc_id, text, source)
+    except ValueError as exc:
+        return str(exc)
+    except ChromaError:
+        return CHROMA_TEXT
+    except EmbeddingError:
+        return EMBEDDING_TEXT
+    return f"saved id={saved['id']} chunks={saved['chunks']} unchanged={str(bool(saved['unchanged'])).lower()}"
+
+
+def _current_time(agent: HermesAgent, arguments: dict[str, object]) -> str:
+    if arguments:
+        return ARGUMENTS_TEXT
+    return json.dumps(agent.current_time(), sort_keys=True)
 
 
 def _strings(arguments: dict[str, object], expected: frozenset[str]) -> bool:
@@ -180,28 +221,3 @@ def _complete(agent: HermesAgent, arguments: dict[str, object]) -> str:
         return MODEL_FAILED
     text = result.get("text")
     return text if isinstance(text, str) else ""
-
-
-def _suggest_skill(agent: HermesAgent, arguments: dict[str, object]) -> str:
-    from agent.decisions.gateway_skill_line import (
-        encode_suggest_skill_result,
-        suggest_skill_result,
-    )
-
-    if set(arguments) != MCP_TOOLS["suggest_skill"]:
-        return ARGUMENTS_TEXT
-    request = arguments["request"]
-    skills = arguments["skills"]
-    if not isinstance(request, str) or not isinstance(skills, list):
-        return ARGUMENTS_TEXT
-    try:
-        payload = suggest_skill_result(
-            mode=agent.settings.jev_mode,
-            client=agent.jev,
-            settings_model=agent.settings.jev_model,
-            request=request,
-            skills=skills,  # type: ignore[arg-type]
-        )
-    except ValueError as exc:
-        return str(exc)
-    return encode_suggest_skill_result(payload)

@@ -1,4 +1,4 @@
-"""Streamable HTTP MCP mount. Cursor calls this process. Hermes does not call Cursor."""
+"""Streamable HTTP MCP mount for Telegram gateway and IDE MCP clients."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from dataclasses import dataclass
 from threading import Lock
 
 from mcp.server.mcpserver import MCPServer
-from pydantic import ValidationError
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import ValidationError
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -20,12 +20,14 @@ from agent.core import HermesAgent
 from agent.tools import ARGUMENTS_TEXT
 from api.mcp_tools import (
     COMPLETE,
+    CURRENT_TIME,
+    LIST_MEMORIES,
     LIST_SKILLS,
     RECALL,
     REMEMBER,
+    SAVE_DOCUMENT,
     SEARCH_DOCUMENTS,
     SEARCH_MEMORY,
-    SUGGEST_SKILL,
     call_tool,
 )
 from utils.auth import is_authorized
@@ -35,9 +37,9 @@ MAX_MCP_REQUESTS = 60
 MCP_WINDOW_SECONDS = 60.0
 LIMIT_TEXT = "MCP request limit reached"
 INSTRUCTIONS = (
-    "Tools for Hermes skills, memory, document and memory search, skill suggestion, and one completion. "
-    "Search results carry [label] citations. "
-    "Hermes uses its own model. This server does not call Cursor."
+    "Tools for Sadra's Hermes personal assistant: skills, memory keys/search, "
+    "document RAG save/search, local time, and completions. "
+    "Search results carry [label] citations."
 )
 
 _LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
@@ -132,21 +134,29 @@ def _register(server: MCPServer, agent: HermesAgent) -> None:
     def remember(key: str, value: str) -> str:
         return call_tool(agent, "remember", {"key": key, "value": value})
 
+    @server.tool(name="list_memories", description=LIST_MEMORIES, structured_output=False)
+    def list_memories(prefix: str = "") -> str:
+        return call_tool(agent, "list_memories", {"prefix": prefix})
+
     @server.tool(name="search_documents", description=SEARCH_DOCUMENTS, structured_output=False)
     def search_documents(q: str, limit: int = 5) -> str:
         return call_tool(agent, "search_documents", {"q": q, "limit": limit})
+
+    @server.tool(name="save_document", description=SAVE_DOCUMENT, structured_output=False)
+    def save_document(id: str, text: str, source: str = "") -> str:
+        return call_tool(agent, "save_document", {"id": id, "text": text, "source": source})
 
     @server.tool(name="search_memory", description=SEARCH_MEMORY, structured_output=False)
     def search_memory(q: str, limit: int = 5) -> str:
         return call_tool(agent, "search_memory", {"q": q, "limit": limit})
 
+    @server.tool(name="current_time", description=CURRENT_TIME, structured_output=False)
+    def current_time() -> str:
+        return call_tool(agent, "current_time", {})
+
     @server.tool(name="complete", description=COMPLETE, structured_output=False)
     def complete(prompt: str) -> str:
         return call_tool(agent, "complete", {"prompt": prompt})
-
-    @server.tool(name="suggest_skill", description=SUGGEST_SKILL, structured_output=False)
-    def suggest_skill(request: str, skills: list[dict[str, str]]) -> str:
-        return call_tool(agent, "suggest_skill", {"request": request, "skills": skills})
 
     for name in MCP_TOOL_ORDER:
         tool = server._tool_manager.get_tool(name)
@@ -159,10 +169,12 @@ MCP_TOOL_ORDER = (
     "list_skills",
     "recall",
     "remember",
+    "list_memories",
     "search_documents",
+    "save_document",
     "search_memory",
+    "current_time",
     "complete",
-    "suggest_skill",
 )
 
 

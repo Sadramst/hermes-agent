@@ -50,8 +50,6 @@ def create_app(
     chroma_reachable: Callable[[], bool] | None = None,
     chroma_client: ChromaClient | None = None,
     model_client: ModelClient | None = None,
-    jev_client: object | None = None,
-    grok_client: object | None = None,
     mcp_limit: int | None = None,
     embedder: object | None = None,
     memory_chroma: object | None = None,
@@ -72,8 +70,6 @@ def create_app(
         resolved,
         chroma_client=client,
         model_client=model_client,
-        jev_client=jev_client,
-        grok_client=grok_client,
         embedder=vectors,
         memory_chroma=memory_chroma,
     )
@@ -108,7 +104,18 @@ def create_app(
     def health() -> dict[str, object]:
         reachable = bool(probe())
         logger.debug("http.health env=%s chroma_reachable=%s", resolved.hermes_env, reachable)
-        return _health_payload(resolved, reachable)
+        return _health_payload(resolved, reachable, profile_loaded=agent.profile.loaded)
+
+    @app.get("/providers")
+    def providers(_: None = Depends(require_api_credential)) -> dict[str, object]:
+        return agent.provider_status()
+
+    @app.get("/memories")
+    def list_memories(
+        prefix: str = Query(default=""),
+        _: None = Depends(require_api_credential),
+    ) -> dict[str, object]:
+        return {"keys": agent.list_memories(prefix)}
 
     def call_collection(action: Callable[[], dict[str, object]], event: str) -> dict[str, object]:
         try:

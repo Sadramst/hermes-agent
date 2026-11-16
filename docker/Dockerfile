@@ -26,6 +26,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/opt/venv/bin:$PATH" \
     HERMES_MEMORY_DIR=/app/storage/memory \
     HERMES_SKILLS_DIR=/app/storage/skills \
+    HERMES_PROFILE_DIR=/app/gateway \
     HERMES_PORT=8080
 
 RUN apt-get update \
@@ -36,6 +37,7 @@ RUN apt-get update \
 COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app
 COPY storage/skills /app/storage/skills
+COPY gateway /app/gateway
 RUN mkdir -p /app/storage/memory \
     && chown -R hermes:hermes /app
 
@@ -54,7 +56,6 @@ COPY tests /app/tests
 COPY docker /app/docker
 COPY docs /app/docs
 COPY vector-db /app/vector-db
-COPY ci-cd /app/ci-cd
 COPY .github /app/.github
 COPY LICENSE README.md /app/
 RUN /opt/venv/bin/pip install --no-cache-dir "pytest>=8.3" "pyyaml>=6.0" "httpx>=0.27"

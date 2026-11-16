@@ -36,10 +36,8 @@ def test_dev_test_prod_resolve_distinct_paths_and_hosts() -> None:
     assert prod.api_token == "fedcba9876543210"
     assert prod.model_base_url == "https://models.example/v1"
     assert prod.model_name == "hermes-model"
-    assert prod.jev_mode == "off"
-    assert prod.jev_api_key is None
-    assert prod.jev_model == "jev-1.13.0"
-    assert prod.jev_base_url == "https://api.typesafe.ai/v1"
+    assert prod.timezone == "UTC"
+    assert prod.provider_auth_mode == "api_key"
 
 
 def test_missing_required_env_raises() -> None:
@@ -120,45 +118,6 @@ def test_model_provider_rejects_a_short_key_and_a_credential_in_the_url() -> Non
 def test_dev_rejects_a_short_api_token() -> None:
     with pytest.raises(SettingsError, match="HERMES_API_TOKEN"):
         load_settings({"HERMES_ENV": "dev", "CHROMA_HOST": "localhost", "HERMES_API_TOKEN": "short"})
-
-
-def test_jev_mode_off_does_not_require_a_key() -> None:
-    settings = load_settings({"HERMES_ENV": "dev", "CHROMA_HOST": "localhost", "HERMES_JEV_MODE": "off"})
-    assert settings.jev_mode == "off"
-    assert settings.jev_api_key is None
-
-
-def test_jev_shadow_requires_a_key_and_rejects_aliases() -> None:
-    with pytest.raises(SettingsError, match="HERMES_JEV_API_KEY"):
-        load_settings({"HERMES_ENV": "dev", "CHROMA_HOST": "localhost", "HERMES_JEV_MODE": "shadow"})
-    with pytest.raises(SettingsError, match="HERMES_JEV_API_KEY"):
-        load_settings(
-            {
-                "HERMES_ENV": "dev",
-                "CHROMA_HOST": "localhost",
-                "HERMES_JEV_MODE": "soft",
-                "HERMES_JEV_API_KEY": "short",
-            }
-        )
-    with pytest.raises(SettingsError, match="pinned"):
-        load_settings(
-            {
-                "HERMES_ENV": "dev",
-                "CHROMA_HOST": "localhost",
-                "HERMES_JEV_MODE": "shadow",
-                "HERMES_JEV_API_KEY": "0123456789abcdef",
-                "HERMES_JEV_MODEL": "jev-latest",
-            }
-        )
-    with pytest.raises(SettingsError, match="HERMES_JEV_BASE_URL"):
-        load_settings(
-            {
-                "HERMES_ENV": "dev",
-                "CHROMA_HOST": "localhost",
-                "HERMES_JEV_BASE_URL": "https://user:secret@api.typesafe.ai/v1",
-                "HERMES_JEV_API_KEY": "0123456789abcdef",
-            }
-        )
 
 
 def test_invalid_port_raises() -> None:

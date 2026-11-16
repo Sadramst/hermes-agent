@@ -1,0 +1,73 @@
+# Nous Hermes Gateway configuration template (/opt/data/config.yaml)
+# Non-secret configuration only. Keep API keys and Telegram tokens in:
+#   - docker/env/.env.gateway (Compose env_file) or
+#   - /opt/data/.env (written by `hermes setup` / `hermes model` / `hermes gateway setup`)
+# OAuth session tokens live in /opt/data/auth.json (managed by `hermes model` / `hermes setup --portal`).
+
+model:
+  # Everyday budget-friendly Gemini via OpenRouter today:
+  provider: openrouter
+  default: "~google/gemini-flash-latest"
+  # ---------------------------------------------------------------------------
+  # Alternative official provider setups (switch interactively via `hermes model`):
+  #
+  # 1. Google AI Studio API Key (Gemini today via GOOGLE_API_KEY / GEMINI_API_KEY):
+  #    provider: gemini
+  #    default: gemini-2.5-flash
+  #
+  # 2. Claude Subscription (Anthropic Pro/Max OAuth or setup-token — LIVE TODAY):
+  #    Run `hermes model` inside hermes-gateway and choose Anthropic OAuth / setup-token.
+  #
+  # 3. ChatGPT Subscription (OpenAI Codex OAuth — LIVE TODAY):
+  #    Run `hermes model` inside hermes-gateway and choose OpenAI Codex OAuth.
+  #
+  # 4. Nous Portal Unified OAuth (LIVE TODAY):
+  #    Run `hermes setup --portal` inside hermes-gateway.
+  #
+  # 5. Official Gemini Subscription OAuth (COMING SOON — NOT LIVE YET, NO DATE):
+  #    Nous Research + Google are building official Google-approved Gemini subscription
+  #    support. Do NOT use unapproved consumer-plan token scrapers/proxies. Once Nous
+  #    ships the official release: pull latest `nousresearch/hermes-agent`, run
+  #    `hermes model`, authenticate with Google OAuth, and update `provider` here.
+  # ---------------------------------------------------------------------------
+
+fallback_providers:
+  - provider: nvidia
+    model: nvidia/nemotron-3.5-super-vl-120b-a12b
+  - provider: gemini
+    model: gemini-2.5-flash
+
+auxiliary:
+  compression:
+    provider: nvidia
+    model: nvidia/nemotron-3.5-super-vl-120b-a12b
+
+# Messaging gateway platforms (Telegram secrets belong in .env.gateway or /opt/data/.env)
+platforms:
+  telegram:
+    enabled: true
+    # Optional: organize DMs into Telegram forum/DM topics (requires BotFather Threaded Mode enabled).
+    # Replace 000000000 with your numeric Telegram chat ID from @userinfobot:
+    # extra:
+    #   dm_topics:
+    #     - chat_id: 000000000
+    #       topics:
+    #         - name: General
+    #           icon_color: 7322096
+    #         - name: Engineering & Ops
+    #           icon_color: 9367192
+    #         - name: Personal Growth
+    #           icon_color: 16766590
+    #         - name: Finance Advisory
+    #           icon_color: 13338331
+    #         - name: Briefings & Alerts
+    #           icon_color: 16478047
+
+# Shared Python API MCP server (Docker internal DNS; expands ${HERMES_API_TOKEN} on connect)
+mcp_servers:
+  hermes-api:
+    url: http://hermes-agent:8080/mcp/
+    headers:
+      Authorization: "Bearer ${HERMES_API_TOKEN}"
+    enabled: true
+

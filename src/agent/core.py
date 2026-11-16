@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 
 from agent import __version__
 from agent.context import CONTEXT_PASSAGES, context_block, passage_label
+from agent.profile import build_agent_system_prompt, load_personal_profile
+from agent.prompt import assemble_completion_prompt
+from agent.tools import (
+    AGENT_TOOL_SCHEMAS,
+    MAX_STEPS,
+    ToolCall,
+    ToolResult,
+    run_calls,
+)
+from memory.store import MemoryStore
 from services.chroma import ChromaClient, ChromaError
 from services.chunking import OVERLAP_CHARS, chunk_id, chunk_text, content_hash
 from services.documents import (
@@ -19,57 +28,14 @@ from services.documents import (
     check_source,
 )
 from services.embedder import HASH_NAME, EmbeddingError, build_embedder
-from services.model import MAX_PROMPT_CHARS
+from services.model import MAX_PROMPT_CHARS, ModelClient, ModelNotConfigured, check_prompt
 from services.rerank import fuse
-from agent.decisions.packs import ACTIVE_PACKS
-from agent.decisions.guardrails import PACK as GUARD_PACK
-from agent.decisions.guardrails import held_reply, record_screen, screen
-from agent.decisions.supervisor import PACK as SUPERVISOR_PACK
-from agent.decisions.supervisor import completion_evidence, completion_steps
-from agent.decisions.supervisor import judge as judge_step
-from agent.decisions.supervisor import STOP_TEXT, loop_evidence, loop_steps, record_step
-from agent.decisions.model_router import PACK as ROUTER_PACK
-from agent.decisions.model_router import judge as judge_route
-from agent.decisions.model_router import record_route
-from agent.decisions.memory_gate import PACK as MEMORY_PACK
-from agent.decisions.memory_gate import judge as judge_memory
-from agent.decisions.memory_gate import record_memory
-from agent.decisions.tool_gate import PACK as TOOL_PACK
-from agent.decisions.tool_gate import hold_for
-from agent.decisions.tool_gate import judge as judge_tools
-from agent.decisions.tool_gate import logged_names, record_tools
-from agent.decisions.passage_filter import PACK as PASSAGE_PACK
-from agent.decisions.passage_filter import (
-    judge,
-    passage_rows,
-    record_passages,
-    shown_ids,
-    visible_matches,
-)
-from agent.decisions.skill_suggestion import (
-    PACK,
-    record_suggestion,
-    suggest,
-    suggestion_block,
-)
-from agent.prompt import assemble_completion_prompt
-from agent.tools import (
-    AGENT_TOOL_SCHEMAS,
-    MAX_STEPS,
-    TOOL_ARGUMENTS,
-    ToolCall,
-    ToolResult,
-    run_calls,
-)
-from services.jev import JevClient, JevError
-from services.grok import GrokClient, GrokError
-from services.model import ModelClient, ModelNotConfigured, check_prompt
 from skills.loader import Skill, SkillLoader
-from memory.store import MemoryStore
 from utils.logging import configure_logging
 from utils.settings import Settings
+from utils.time import now_report
 
-# Neighbors fetched per requested result, so the keyword fusion and the passage filter can reorder.
+# Neighbors fetched per requested result so reciprocal-rank fusion can reorder matches.
 FETCH_FACTOR = 2
 MAX_AGENT_STEPS = 16
 
@@ -86,8 +52,6 @@ class HermesAgent:
         settings: Settings,
         chroma_client: ChromaClient | None = None,
         model_client: ModelClient | None = None,
-        jev_client: object | None = None,
-        grok_client: object | None = None,
         embedder: object | None = None,
         memory_chroma: object | None = None,
     ) -> None:
@@ -95,6 +59,7 @@ class HermesAgent:
         self.log = configure_logging(settings.log_level)
         self.memory = MemoryStore(settings.memory_dir)
         self.skills = SkillLoader(settings.skills_dir)
+        self.profile = load_personal_profile(settings.profile_dir)
         self.embedder = embedder if embedder is not None else build_embedder(settings)
         dimension = getattr(self.embedder, "dimension", None)
         self.chroma = chroma_client or ChromaClient(
@@ -109,14 +74,11 @@ class HermesAgent:
         if self.memory_chroma is None and settings.memory_index and callable(bind):
             self.memory_chroma = bind(settings.memory_collection, dimension)
         self.model = model_client if model_client is not None else _model_client(settings)
-        self.jev = jev_client if jev_client is not None else _jev_client(settings)
-        self.grok = grok_client if grok_client is not None else _grok_client(settings)
         self.log.info(
-            "agent.ready env=%s chroma=%s:%s jev_mode=%s",
+            "agent.ready env=%s chroma=%s:%s",
             settings.hermes_env,
             settings.chroma_host,
             settings.chroma_port,
-            settings.jev_mode,
         )
 
     def list_skills(self) -> list[Skill]:
@@ -126,50 +88,48 @@ class HermesAgent:
 
     def remember(self, key: str, value: str) -> bool:
         self.memory.check(key)
-        verdict = _memory_gate(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            model=self.settings.jev_model,
-            key=key,
-            value=value,
-        )
-        keep = verdict is None or verdict.keep
-        if keep:
-            self.memory.write(key, value)
-            self.log.info("memory.write key=%s env=%s", key, self.settings.hermes_env)
-            self._index_memory(key, value)
-        if verdict is not None:
-            record_memory(
-                mode=self.settings.jev_mode,
-                model=verdict.model,
-                memory_key=key,
-                kind=verdict.kind,
-                answers=verdict.answers,
-                reason=verdict.reason,
-                persisted=keep,
-                enforced=self.settings.jev_mode == "soft",
-            )
-        return keep
-
-    def delegate_to_grok(self, task: str) -> str:
-        """Post one task. The result is the handoff id."""
-        send = getattr(self.grok, "send", None)
-        if not callable(send):
-            raise GrokError()
-        handoff_id = send(task)
-        if not isinstance(handoff_id, str) or not handoff_id:
-            raise GrokError()
-        self.log.info("grok.handoff id=%s env=%s", handoff_id, self.settings.hermes_env)
-        return handoff_id
+        self.memory.write(key, value)
+        self.log.info("memory.write key=%s env=%s", key, self.settings.hermes_env)
+        self._index_memory(key, value)
+        return True
 
     def recall(self, key: str) -> str:
         self.log.info("memory.read key=%s env=%s", key, self.settings.hermes_env)
         return self.memory.read(key)
 
+    def list_memories(self, prefix: str = "") -> list[str]:
+        """Return stored memory keys in sorted order, optionally filtered by prefix."""
+        cleaned = prefix.strip()
+        keys = [key for key in self.memory.keys() if not cleaned or key.startswith(cleaned)]
+        self.log.info("memory.list count=%s env=%s", len(keys), self.settings.hermes_env)
+        return keys
+
+    def current_time(self) -> dict[str, str]:
+        """Return the current date, local time in the configured timezone, and UTC ISO timestamp."""
+        return now_report(self.settings.timezone)
+
+    def provider_status(self) -> dict[str, object]:
+        """Return secret-free model provider and subscription readiness metadata."""
+        return {
+            "auth_mode": self.settings.provider_auth_mode,
+            "configured": self.settings.model_base_url is not None,
+            "model": self.settings.model_name or "",
+            "gemini_subscription": {
+                "supported_today": False,
+                "status": "pending_official_nous_google_oauth",
+                "note": (
+                    "Gemini in Hermes runs via API key (OpenRouter or Google AI Studio) today. "
+                    "Nous Research and Google are working on official approved Gemini subscription OAuth "
+                    "(not live yet, no release date). Claude and ChatGPT OAuth subscriptions are supported "
+                    "in hermes-gateway today."
+                ),
+            },
+        }
+
     def health(self) -> dict[str, object]:
         reachable = self.chroma.heartbeat()
         self.log.debug("chroma.heartbeat reachable=%s env=%s", reachable, self.settings.hermes_env)
-        return _health_payload(self.settings, reachable)
+        return _health_payload(self.settings, reachable, profile_loaded=self.profile.loaded)
 
     def save_document(self, doc_id: str, text: str, source: str = "") -> dict[str, object]:
         """Chunk, embed, and store one document. Unchanged text is not embedded again."""
@@ -211,29 +171,13 @@ class HermesAgent:
         return {"id": checked_id, "collection": collection, "chunks": len(chunks), "unchanged": False}
 
     def search_documents(self, query: str, limit: int = 5) -> dict[str, object]:
-        """Return saved passages for a query string, best first.
-
-        Hermes fetches extra neighbors, reorders them with a keyword ranking,
-        then applies the passage pack. Shadow logs which matches reach the
-        helping level and still returns the top neighbors. Soft returns only
-        those matches. A Jev error returns the top neighbors. Mode off does not call Jev.
-        """
+        """Return saved passages for a query string, ordered by hybrid vector + keyword fusion."""
         checked_query = check_query(query)
         checked_limit = check_limit(limit)
         fetch = min(MAX_LIMIT, checked_limit * FETCH_FACTOR)
         matches = self.chroma.query_documents(self.embedder.embed_query(checked_query), fetch)
-        visible = _passage_filter(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            model=self.settings.jev_model,
-            query=checked_query,
-            matches=fuse(checked_query, matches),
-        )[:checked_limit]
-        self.log.info(
-            "documents.search matches=%s env=%s",
-            len(visible),
-            self.settings.hermes_env,
-        )
+        visible = fuse(checked_query, matches)[:checked_limit]
+        self.log.info("documents.search matches=%s env=%s", len(visible), self.settings.hermes_env)
         return {"collection": self.settings.documents_collection, "matches": visible}
 
     def search_memory(self, query: str, limit: int = 5) -> dict[str, object]:
@@ -270,11 +214,7 @@ class HermesAgent:
         return {"indexed": indexed}
 
     def migrate_documents(self, source_collection: str) -> dict[str, int]:
-        """Copy documents from an older collection into the active one, embedding them again.
-
-        Whole-document rows copy exactly. Chunked rows are rejoined at their overlap.
-        Rows whose id is not a valid document id are skipped.
-        """
+        """Copy documents from an older collection into the active one, embedding them again."""
         if source_collection == self.settings.documents_collection:
             raise ValueError("The source collection is the active collection")
         bind = getattr(self.chroma, "bound_to", None)
@@ -316,6 +256,134 @@ class HermesAgent:
             self.settings.hermes_env,
         )
         return {"migrated": migrated, "skipped": skipped}
+
+    def run_tools(self, calls: list[ToolCall]) -> list[ToolResult]:
+        """Run an allowlisted batch of tool calls in order."""
+        if len(calls) > MAX_STEPS:
+            raise ValueError(f"A tool run is limited to {MAX_STEPS} calls")
+        return run_calls(self, calls)
+
+    def complete(
+        self,
+        prompt: str,
+        *,
+        autonomous: bool = False,
+        max_steps: int = MAX_STEPS,
+    ) -> dict[str, object]:
+        """Send one completion or run the autonomous multi-step tool loop when autonomous=True."""
+        if autonomous:
+            return self.run_agent(prompt, max_steps=max_steps)
+        if self.model is None:
+            raise ModelNotConfigured("Model provider is not configured")
+        checked_prompt = check_prompt(prompt)
+        skills = self.skills.load()
+        checked = check_prompt(assemble_completion_prompt(checked_prompt, skills))
+        context, sources = self._retrieve_context(checked_prompt, skills)
+        if context is not None:
+            checked = check_prompt(assemble_completion_prompt(checked_prompt, skills, context))
+        name = self.settings.model_name or self.model.model
+        text = self.model.complete(checked, model=name)
+        self.log.info(
+            "model.complete model=%s skills=%s env=%s",
+            name,
+            len(skills),
+            self.settings.hermes_env,
+        )
+        result: dict[str, object] = {"text": text, "model": name}
+        if sources:
+            result["sources"] = sources
+        return result
+
+    def run_agent(self, prompt: str, *, max_steps: int = MAX_STEPS) -> dict[str, object]:
+        """Run an autonomous multi-step tool-calling loop until the model answers or hits max_steps."""
+        if isinstance(max_steps, bool) or not isinstance(max_steps, int) or not 1 <= max_steps <= MAX_AGENT_STEPS:
+            raise ValueError(f"max_steps must be between 1 and {MAX_AGENT_STEPS}")
+        if self.model is None:
+            raise ModelNotConfigured("Model provider is not configured")
+        checked_prompt = check_prompt(prompt)
+        skills = self.skills.load()
+        checked = check_prompt(assemble_completion_prompt(checked_prompt, skills))
+        context, sources = self._retrieve_context(checked_prompt, skills)
+        if context is not None:
+            checked = check_prompt(assemble_completion_prompt(checked_prompt, skills, context))
+        name = self.settings.model_name or self.model.model
+        chat_fn = getattr(self.model, "chat", None)
+        if not callable(chat_fn):
+            text = self.model.complete(checked, model=name)
+            steps_taken: list[dict[str, object]] = []
+        else:
+            system_prompt = build_agent_system_prompt(
+                self.profile,
+                timezone_name=self.settings.timezone,
+                provider_auth_mode=self.settings.provider_auth_mode,
+            )
+            messages: list[dict[str, object]] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": checked},
+            ]
+            steps_taken = []
+            text = ""
+            for step_index in range(max_steps):
+                turn = chat_fn(messages, tools=AGENT_TOOL_SCHEMAS, model=name)
+                if not turn.tool_calls:
+                    text = turn.content
+                    break
+                batch_calls = turn.tool_calls[:MAX_STEPS]
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": turn.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": json.dumps(tc.arguments),
+                                },
+                            }
+                            for tc in batch_calls
+                        ],
+                    }
+                )
+                tool_results = self.run_tools([ToolCall(tc.name, tc.arguments) for tc in batch_calls])
+                halt_loop = False
+                for tc, res in zip(batch_calls, tool_results):
+                    steps_taken.append(
+                        {
+                            "step": step_index + 1,
+                            "name": res.name,
+                            "status": res.status,
+                            "output": res.output,
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "name": tc.name,
+                            "content": res.output,
+                        }
+                    )
+                    if res.status == "ask_person":
+                        halt_loop = True
+                if halt_loop:
+                    break
+            if not text:
+                final_turn = chat_fn(messages, tools=None, model=name)
+                text = final_turn.content
+
+        self.log.info(
+            "agent.run model=%s steps=%s skills=%s env=%s",
+            name,
+            len(steps_taken),
+            len(skills),
+            self.settings.hermes_env,
+        )
+        result: dict[str, object] = {"text": text, "model": name, "steps": steps_taken}
+        if sources:
+            result["sources"] = sources
+        return result
 
     def _index_memory(self, key: str, value: str) -> bool:
         """Mirror one memory record into the memory collection. A failure keeps the file write."""
@@ -383,12 +451,7 @@ class HermesAgent:
         name = getattr(self.embedder, "name", HASH_NAME)
         return name if isinstance(name, str) else HASH_NAME
 
-    def _retrieve_context(
-        self,
-        prompt: str,
-        skills: list[Skill],
-        suggestion: str | None,
-    ) -> tuple[str | None, list[str]]:
+    def _retrieve_context(self, prompt: str, skills: list[Skill]) -> tuple[str | None, list[str]]:
         """Return the Context block and its passage labels. Shadow logs and returns nothing."""
         mode = self.settings.rag_mode
         if mode not in {"shadow", "soft"}:
@@ -405,24 +468,8 @@ class HermesAgent:
             return None, []
         matches = found.get("matches")
         passages = [match for match in matches if isinstance(match, dict)] if isinstance(matches, list) else []
-        block, used = _fitted_context(prompt, skills, suggestion, passages)
+        block, used = _fitted_context(prompt, skills, passages)
         labels = [passage_label(passage) for passage in used]
-        if block is not None and mode == "soft" and self.settings.jev_mode == "soft":
-            route = _guard_screen(
-                mode=self.settings.jev_mode,
-                client=self.jev,
-                model=self.settings.jev_model,
-                side="inbound",
-                text=block,
-            )
-            if route != "pass":
-                self.log.info(
-                    "rag.context mode=%s passages=%s used=false reason=guardrail env=%s",
-                    mode,
-                    ",".join(labels),
-                    self.settings.hermes_env,
-                )
-                return None, []
         inject = mode == "soft" and block is not None
         self.log.info(
             "rag.context mode=%s passages=%s used=%s env=%s",
@@ -435,334 +482,10 @@ class HermesAgent:
             return None, []
         return block, labels
 
-    def run_tools(self, calls: list[ToolCall]) -> list[ToolResult]:
-        """Run an allowlisted batch. Soft mode may hold a call the allowlist would run.
-
-        Soft mode also stops calls that follow a looping supervisor judgment.
-        Shadow logs that judgment and still runs the batch.
-        """
-        if len(calls) > MAX_STEPS:
-            raise ValueError(f"A tool run is limited to {MAX_STEPS} calls")
-        verdict = _tool_gate(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            model=self.settings.jev_model,
-            calls=calls,
-        )
-        enforce = self.settings.jev_mode == "soft" and verdict is not None
-        holds = None
-        if enforce and verdict is not None:
-            holds = [
-                hold_for(
-                    name=call.name,
-                    index=index,
-                    choice=verdict.choice,
-                    reason=verdict.reason,
-                    answers=verdict.answers,
-                )
-                for index, call in enumerate(calls)
-            ]
-        if self.settings.jev_mode == "soft":
-            results = self._run_until_loop(calls, holds)
-        else:
-            results = run_calls(self, calls, holds)
-        if verdict is not None:
-            record_tools(
-                mode=self.settings.jev_mode,
-                model=verdict.model,
-                call_names=logged_names(calls),
-                choice=verdict.choice,
-                statuses=[result.status for result in results],
-                answers=verdict.answers,
-                reason=verdict.reason,
-                enforced=enforce,
-            )
-        if self.settings.jev_mode != "soft":
-            _supervise(
-                mode=self.settings.jev_mode,
-                client=self.jev,
-                model=self.settings.jev_model,
-                side="loop",
-                steps=loop_steps(results),
-                evidence=loop_evidence(results),
-            )
-        return results
-
-    def _run_until_loop(
-        self,
-        calls: list[ToolCall],
-        holds: list[str] | None,
-    ) -> list[ToolResult]:
-        """Run calls until a looping judgment. Later calls are not executed."""
-        results: list[ToolResult] = []
-        stop = False
-        for index, call in enumerate(calls):
-            if stop:
-                results.append(_loop_stop(self, call))
-                continue
-            held = None if holds is None else [holds[index]]
-            results.extend(run_calls(self, [call], held))
-            stop = _supervise(
-                mode=self.settings.jev_mode,
-                client=self.jev,
-                model=self.settings.jev_model,
-                side="loop",
-                steps=loop_steps(results),
-                evidence=loop_evidence(results),
-                stop_remaining=index < len(calls) - 1,
-            )
-        return results
-
-    def complete(
-        self,
-        prompt: str,
-        *,
-        autonomous: bool = False,
-        max_steps: int = MAX_STEPS,
-    ) -> dict[str, object]:
-        """Send one completion or run the autonomous multi-step tool loop when autonomous=True.
-
-        Shadow mode asks the skill-suggestion pack and logs the winner.
-        Soft mode asks the same pack and adds a skill_relevance block.
-        The model may ignore that block. Shadow logs a guardrail route and
-        still returns the model reply. Soft withholds that reply on review
-        or block, including when Jev fails. Mode off does not call Jev.
-
-        HERMES_RAG_MODE shadow searches and logs the passage labels it would add.
-        Soft adds them as a Context block and returns their labels as `sources`.
-        A search failure completes without context.
-        """
-        if autonomous:
-            return self.run_agent(prompt, max_steps=max_steps)
-        if self.model is None:
-            raise ModelNotConfigured("Model provider is not configured")
-        checked_prompt = check_prompt(prompt)
-        skills = self.skills.load()
-        check_prompt(assemble_completion_prompt(checked_prompt, skills))
-        block = _skill_suggestion(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            model=self.settings.jev_model,
-            request=checked_prompt,
-            skills=skills,
-        )
-        checked = check_prompt(assemble_completion_prompt(checked_prompt, skills, block))
-        inbound = _guard_screen(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            model=self.settings.jev_model,
-            side="inbound",
-            text=checked_prompt,
-        )
-        name = self.settings.model_name or self.model.model
-        held = held_reply(inbound) if self.settings.jev_mode == "soft" else None
-        if held is not None:
-            self.log.info(
-                "model.complete model=%s skills=%s env=%s",
-                name,
-                len(skills),
-                self.settings.hermes_env,
-            )
-            _supervise(
-                mode=self.settings.jev_mode,
-                client=self.jev,
-                model=self.settings.jev_model,
-                side="completion",
-                steps=completion_steps("held"),
-                evidence=completion_evidence(name, len(skills)),
-            )
-            return {"text": held, "model": name}
-        context, sources = self._retrieve_context(checked_prompt, skills, block)
-        if context is not None:
-            checked = check_prompt(assemble_completion_prompt(checked_prompt, skills, block, context))
-        completion_model = _model_route(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            jev_model=self.settings.jev_model,
-            request=checked_prompt,
-            frontier_name=self.settings.model_name or self.model.model,
-            small_name=self.settings.model_small,
-        )
-        text = self.model.complete(checked, model=completion_model)
-        outbound = _guard_screen(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            model=self.settings.jev_model,
-            side="outbound",
-            text=text,
-        )
-        replacement = held_reply(outbound) if self.settings.jev_mode == "soft" else None
-        if replacement is not None:
-            text = replacement
-        name = self.settings.model_name or self.model.model
-        self.log.info(
-            "model.complete model=%s skills=%s env=%s",
-            completion_model,
-            len(skills),
-            self.settings.hermes_env,
-        )
-        _supervise(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            model=self.settings.jev_model,
-            side="completion",
-            steps=completion_steps("ran"),
-            evidence=completion_evidence(name, len(skills)),
-        )
-        result: dict[str, object] = {"text": text, "model": name}
-        if sources:
-            result["sources"] = sources
-        return result
-
-    def run_agent(self, prompt: str, *, max_steps: int = MAX_STEPS) -> dict[str, object]:
-        """Run an autonomous multi-step tool-calling loop until the model answers or hits max_steps."""
-        if isinstance(max_steps, bool) or not isinstance(max_steps, int) or not 1 <= max_steps <= MAX_AGENT_STEPS:
-            raise ValueError(f"max_steps must be between 1 and {MAX_AGENT_STEPS}")
-        if self.model is None:
-            raise ModelNotConfigured("Model provider is not configured")
-        checked_prompt = check_prompt(prompt)
-        skills = self.skills.load()
-        check_prompt(assemble_completion_prompt(checked_prompt, skills))
-        block = _skill_suggestion(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            model=self.settings.jev_model,
-            request=checked_prompt,
-            skills=skills,
-        )
-        checked = check_prompt(assemble_completion_prompt(checked_prompt, skills, block))
-        inbound = _guard_screen(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            model=self.settings.jev_model,
-            side="inbound",
-            text=checked_prompt,
-        )
-        name = self.settings.model_name or self.model.model
-        held = held_reply(inbound) if self.settings.jev_mode == "soft" else None
-        if held is not None:
-            self.log.info(
-                "agent.run model=%s steps=0 skills=%s env=%s",
-                name,
-                len(skills),
-                self.settings.hermes_env,
-            )
-            _supervise(
-                mode=self.settings.jev_mode,
-                client=self.jev,
-                model=self.settings.jev_model,
-                side="completion",
-                steps=completion_steps("held"),
-                evidence=completion_evidence(name, len(skills)),
-            )
-            return {"text": held, "model": name, "steps": []}
-
-        context, sources = self._retrieve_context(checked_prompt, skills, block)
-        if context is not None:
-            checked = check_prompt(assemble_completion_prompt(checked_prompt, skills, block, context))
-        completion_model = _model_route(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            jev_model=self.settings.jev_model,
-            request=checked_prompt,
-            frontier_name=self.settings.model_name or self.model.model,
-            small_name=self.settings.model_small,
-        )
-        chat_fn = getattr(self.model, "chat", None)
-        if not callable(chat_fn):
-            text = self.model.complete(checked, model=completion_model)
-            steps_taken: list[dict[str, object]] = []
-        else:
-            messages: list[dict[str, object]] = [{"role": "user", "content": checked}]
-            steps_taken = []
-            text = ""
-            for step_index in range(max_steps):
-                turn = chat_fn(messages, tools=AGENT_TOOL_SCHEMAS, model=completion_model)
-                if not turn.tool_calls:
-                    text = turn.content
-                    break
-                batch_calls = turn.tool_calls[:MAX_STEPS]
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": turn.content or "",
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.name,
-                                    "arguments": json.dumps(tc.arguments),
-                                },
-                            }
-                            for tc in batch_calls
-                        ],
-                    }
-                )
-                tool_results = self.run_tools(
-                    [ToolCall(tc.name, tc.arguments) for tc in batch_calls]
-                )
-                halt_loop = False
-                for tc, res in zip(batch_calls, tool_results):
-                    steps_taken.append(
-                        {
-                            "step": step_index + 1,
-                            "name": res.name,
-                            "status": res.status,
-                            "output": res.output,
-                        }
-                    )
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "name": tc.name,
-                            "content": res.output,
-                        }
-                    )
-                    if res.status in {"stopped", "ask_person"}:
-                        halt_loop = True
-                if halt_loop:
-                    break
-            if not text:
-                final_turn = chat_fn(messages, tools=None, model=completion_model)
-                text = final_turn.content
-
-        outbound = _guard_screen(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            model=self.settings.jev_model,
-            side="outbound",
-            text=text,
-        )
-        replacement = held_reply(outbound) if self.settings.jev_mode == "soft" else None
-        if replacement is not None:
-            text = replacement
-        self.log.info(
-            "agent.run model=%s steps=%s skills=%s env=%s",
-            completion_model,
-            len(steps_taken),
-            len(skills),
-            self.settings.hermes_env,
-        )
-        _supervise(
-            mode=self.settings.jev_mode,
-            client=self.jev,
-            model=self.settings.jev_model,
-            side="completion",
-            steps=completion_steps("ran"),
-            evidence=completion_evidence(name, len(skills)),
-        )
-        result: dict[str, object] = {"text": text, "model": name, "steps": steps_taken}
-        if sources:
-            result["sources"] = sources
-        return result
-
 
 def _fitted_context(
     prompt: str,
     skills: list[Skill],
-    suggestion: str | None,
     passages: list[dict[str, object]],
 ) -> tuple[str | None, list[dict[str, object]]]:
     """Keep the best passages that fit the prompt cap. Lower-ranked passages are dropped first."""
@@ -771,7 +494,7 @@ def _fitted_context(
         block = context_block(kept)
         if block is None:
             continue
-        if len(assemble_completion_prompt(prompt, skills, suggestion, block)) <= MAX_PROMPT_CHARS:
+        if len(assemble_completion_prompt(prompt, skills, block)) <= MAX_PROMPT_CHARS:
             return block, [passage for passage in kept if passage_label(passage)]
     return None, []
 
@@ -797,299 +520,12 @@ def _model_client(settings: Settings) -> ModelClient | None:
     return ModelClient(settings.model_base_url, settings.model_name, settings.model_api_key)
 
 
-def _jev_client(settings: Settings) -> JevClient | None:
-    if settings.jev_mode == "off" or not settings.jev_api_key:
-        return None
-    return JevClient(settings.jev_base_url, settings.jev_model, settings.jev_api_key)
-
-
-def _grok_client(settings: Settings) -> GrokClient | None:
-    if settings.grok_handoff != "on":
-        return None
-    if not (settings.grok_webhook_url and settings.grok_alias_token and settings.grok_handoff_secret):
-        return None
-    return GrokClient(settings.grok_webhook_url, settings.grok_alias_token, settings.grok_handoff_secret)
-
-
-def _skill_suggestion(
+def _health_payload(
+    settings: Settings,
+    reachable: bool,
     *,
-    mode: str,
-    client: object | None,
-    model: str,
-    request: str,
-    skills: list[Skill],
-) -> str | None:
-    """Return the soft-mode advisory block. Shadow logs and returns nothing."""
-    if mode not in {"shadow", "soft"} or client is None or PACK not in ACTIVE_PACKS:
-        return None
-    names = [skill.name for skill in skills]
-    try:
-        result = suggest(client, request, skills)
-    except (JevError, ValueError):
-        record_suggestion(
-            mode=mode,
-            model=model,
-            skill_names=names,
-            answers={},
-            suggested="",
-            reason="jev_error",
-        )
-        return None
-    suggested = result.name or ""
-    reason = result.reason
-    if suggested not in names:
-        suggested = ""
-        if result.name:
-            reason = "unknown"
-    inject = mode == "soft" and reason != "no_skills"
-    record_suggestion(
-        mode=mode,
-        model=result.model or model,
-        skill_names=names,
-        answers=result.answers,
-        suggested=suggested,
-        reason=reason,
-        suggestion_in_prompt=inject,
-    )
-    if not inject:
-        return None
-    return suggestion_block(suggested or None)
-
-
-def _passage_filter(
-    *,
-    mode: str,
-    client: object | None,
-    model: str,
-    query: str,
-    matches: list[dict[str, object]],
-) -> list[dict[str, object]]:
-    """Return the matches to show. Shadow logs and leaves the neighbor list intact."""
-    if mode not in {"shadow", "soft"} or client is None or PASSAGE_PACK not in ACTIVE_PACKS:
-        return matches
-    ids = [row["id"] for row in passage_rows(matches)]
-    try:
-        result = judge(client, query, matches)
-    except (JevError, ValueError):
-        record_passages(
-            mode=mode,
-            model=model,
-            match_ids=ids,
-            shown=[],
-            answers={},
-            reason="jev_error",
-            filtered=False,
-        )
-        return matches
-    shown = shown_ids(result.answers, ids) if result.reason == "ok" else []
-    apply = mode == "soft" and result.reason == "ok"
-    record_passages(
-        mode=mode,
-        model=result.model or model,
-        match_ids=ids,
-        shown=shown,
-        answers=result.answers,
-        reason=result.reason,
-        filtered=apply,
-    )
-    if not apply:
-        return matches
-    return visible_matches(matches, shown)
-
-
-def _guard_screen(
-    *,
-    mode: str,
-    client: object | None,
-    model: str,
-    side: str,
-    text: str,
-) -> str:
-    """Log one guardrail route. Soft mode is the only mode that honors it."""
-    if mode not in {"shadow", "soft"} or client is None or GUARD_PACK not in ACTIVE_PACKS:
-        return "pass"
-    enforce = mode == "soft"
-    try:
-        result = screen(client, side, text)
-    except (JevError, ValueError):
-        record_screen(
-            mode=mode,
-            model=model,
-            side=side,
-            route="review",
-            answers={},
-            reason="jev_error",
-            enforced=enforce,
-        )
-        return "review"
-    record_screen(
-        mode=mode,
-        model=result.model or model,
-        side=side,
-        route=result.route,
-        answers=result.answers,
-        reason=result.reason,
-        enforced=enforce,
-    )
-    return result.route
-
-
-@dataclass(frozen=True)
-class _MemoryVerdict:
-    keep: bool
-    model: str
-    kind: str
-    answers: dict[str, object]
-    reason: str
-
-
-def _memory_gate(
-    *,
-    mode: str,
-    client: object | None,
-    model: str,
-    key: str,
-    value: str,
-) -> _MemoryVerdict | None:
-    """Judge one write. Shadow always keeps it. Soft keeps a durable kind or a Jev error."""
-    if mode not in {"shadow", "soft"} or client is None or MEMORY_PACK not in ACTIVE_PACKS:
-        return None
-    try:
-        result = judge_memory(client, key, value)
-    except (JevError, ValueError):
-        return _MemoryVerdict(keep=True, model=model, kind="", answers={}, reason="jev_error")
-    keep = mode != "soft" or result.reason == "ok"
-    return _MemoryVerdict(
-        keep=keep,
-        model=result.model or model,
-        kind=result.kind,
-        answers=result.answers,
-        reason=result.reason,
-    )
-
-
-@dataclass(frozen=True)
-class _ToolVerdict:
-    model: str
-    choice: str
-    answers: dict[str, object]
-    reason: str
-
-
-def _tool_gate(
-    *,
-    mode: str,
-    client: object | None,
-    model: str,
-    calls: list[ToolCall],
-) -> _ToolVerdict | None:
-    """Log-only tool judgment. An empty batch, or mode off, makes no Jev call."""
-    if not calls or mode not in {"shadow", "soft"} or client is None or TOOL_PACK not in ACTIVE_PACKS:
-        return None
-    try:
-        result = judge_tools(client, calls)
-    except (JevError, ValueError):
-        return _ToolVerdict(model=model, choice="", answers={}, reason="jev_error")
-    return _ToolVerdict(
-        model=result.model or model,
-        choice=result.choice,
-        answers=result.answers,
-        reason=result.reason,
-    )
-
-
-def _supervise(
-    *,
-    mode: str,
-    client: object | None,
-    model: str,
-    side: str,
-    steps: list[dict[str, str]],
-    evidence: list[dict[str, str]],
-    stop_remaining: bool = False,
-) -> bool:
-    """Log one supervisor judgment. Empty steps and mode off make no Jev call.
-
-    A looping judgment stops later tool calls only in soft mode. Completion
-    text is never changed here. A Jev error does not stop the batch.
-    """
-    if not steps or mode not in {"shadow", "soft"} or client is None or SUPERVISOR_PACK not in ACTIVE_PACKS:
-        return False
-    try:
-        result = judge_step(client, steps, evidence)
-    except (JevError, ValueError):
-        record_step(
-            mode=mode,
-            model=model,
-            side=side,
-            reason="jev_error",
-            looping=False,
-            done=False,
-            answers={},
-        )
-        return False
-    enforced = mode == "soft" and side == "loop" and result.reason == "looping" and stop_remaining
-    record_step(
-        mode=mode,
-        model=result.model or model,
-        side=side,
-        reason=result.reason,
-        looping=result.looping,
-        done=result.done,
-        answers=result.answers,
-        enforced=enforced,
-    )
-    return enforced
-
-
-def _loop_stop(agent: HermesAgent, call: ToolCall) -> ToolResult:
-    """Record a call that soft mode did not run after a looping judgment."""
-    result = ToolResult(call.name, "stopped", STOP_TEXT)
-    name = call.name if call.name in TOOL_ARGUMENTS else "unknown"
-    agent.log.info(
-        "tools.run name=%s status=%s env=%s",
-        name,
-        result.status,
-        agent.settings.hermes_env,
-    )
-    return result
-
-
-def _model_route(
-    *,
-    mode: str,
-    client: object | None,
-    jev_model: str,
-    request: str,
-    frontier_name: str,
-    small_name: str | None,
-) -> str:
-    """Log a tier. In soft mode may return small_name when the judge says small/ok."""
-    if mode not in {"shadow", "soft"} or client is None or ROUTER_PACK not in ACTIVE_PACKS:
-        return frontier_name
-    try:
-        result = judge_route(client, request)
-    except (JevError, ValueError):
-        record_route(mode=mode, model=jev_model, tier="frontier", answers={}, reason="jev_error")
-        return frontier_name
-    record_route(
-        mode=mode,
-        model=result.model or jev_model,
-        tier=result.tier,
-        answers=result.answers,
-        reason=result.reason,
-    )
-    if (
-        mode == "soft"
-        and small_name
-        and result.tier == "small"
-        and result.reason == "ok"
-    ):
-        return small_name
-    return frontier_name
-
-
-def _health_payload(settings: Settings, reachable: bool) -> dict[str, object]:
+    profile_loaded: bool = False,
+) -> dict[str, object]:
     return {
         "status": "ok",
         "environment": settings.hermes_env,
@@ -1103,16 +539,16 @@ def _health_payload(settings: Settings, reachable: bool) -> dict[str, object]:
             "configured": settings.model_base_url is not None,
             "name": settings.model_name or "",
         },
-        "jev": {
-            "configured": settings.jev_api_key is not None,
-            "mode": settings.jev_mode,
-            "model": settings.jev_model,
+        "provider": {
+            "auth_mode": settings.provider_auth_mode,
+            "gemini_subscription": "pending_official_oauth",
+        },
+        "assistant": {
+            "timezone": settings.timezone,
+            "profile_loaded": profile_loaded,
         },
         "mcp": {
             "enabled": settings.mcp_enabled,
-        },
-        "grok": {
-            "handoff": settings.grok_handoff,
         },
         "retrieval": {
             "rag_mode": settings.rag_mode,
