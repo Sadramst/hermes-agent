@@ -4,56 +4,38 @@ version: 1.1.0
 ---
 # Purpose
 
-Solve multi-step user requests autonomously by checking time, memory, documents, and skills first, persisting durable findings under clean namespaces, and synthesizing a cited answer.
+Solve everyday multi-step requests accurately by checking time, memory, documents, and skills first, saving lasting findings under dotted keys, and giving grounded answers.
 
 # Inputs
 
-- User prompt or task description
-- Loaded skill index (`list_skills`, `read_skill`)
-- Persistent memory store (`list_memories`, `search_memory`, `recall`, `remember`)
-- ChromaDB document store (`search_documents`, `save_document`)
-- Clock context (`current_time`)
+- User request and loaded `USER.md` / `SOUL.md` preferences
+- Clock (`current_time`), skills (`list_skills`, `read_skill`), memory (`list_memories`, `search_memory`, `recall`, `remember`), and documents (`search_documents`, `save_document`)
 
 # Outputs
 
-- Executed tool call trace (`steps`)
-- Grounded assistant response (`text`) citing `[label]` for any retrieved document passages
-- Durable facts persisted under dotted keys (`profile.*`, `work.*`, `dev.*`, `goal.*`, `habit.*`, `finance.*`, `ops.*`) when requested or clearly lasting
+- Executed tool trace (`steps`) and concise grounded response citing `[label]` for any retrieved document passage
+- Lasting user facts persisted via `remember` (`profile.*`, `work.*`, `dev.*`, `goal.*`, `habit.*`, `study.*`, `finance.*`, `ops.*`) or `save_document`
 
 # Execution flow
 
-```mermaid
-flowchart TD
-  req["User Request"] --> timeCheck["Check current_time if date-sensitive"]
-  timeCheck --> search["Check list_memories / search_memory / search_documents"]
-  search --> skill{"Matching skill?"}
-  skill -->|"yes"| readSkill["Call read_skill"]
-  skill -->|"no"| act["Execute or synthesize"]
-  readSkill --> act
-  act --> persist{"Durable fact or note?"}
-  persist -->|"yes"| store["remember or save_document"]
-  persist -->|"no"| reply["Synthesize cited answer"]
-  store --> reply
-```
-
-1. Call `current_time` when the task depends on today's date, schedule, or financial period.
-2. Check `list_memories`, `search_memory`, or `search_documents` before guessing prior preferences, server facts, goals, or financial assumptions.
-3. When a skill in the index matches the domain, call `read_skill` to follow its exact workflow.
-4. When the user supplies lasting facts, store them with `remember` under dotted namespaces (or `save_document` for multi-paragraph references).
-5. Synthesize a concise, grounded final answer citing `[label]` for any retrieved passages.
+1. Call `current_time` whenever dates, weekdays, schedules, or periods matter.
+2. Check `list_memories`, `search_memory`, or `search_documents` before guessing prior preferences, facts, or plans.
+3. If a loaded skill fits the task, call `read_skill` to follow its guardrails and checklist.
+4. Persist confirmed durable facts or reference notes via `remember` or `save_document`.
+5. Reply concisely, citing `[label]` for retrieved passages.
 
 # Error handling
 
-- If `search_documents` or `search_memory` returns no matches, state clearly that no stored records matched instead of fabricating facts.
-- If an irreversible tool (`delete_memory`) returns `ask_person`, report that human confirmation is required and stop calling tools.
+- State clearly when no memory or document matches instead of inventing facts.
+- Stop and wait for human confirmation if an irreversible tool (`delete_memory`) returns `ask_person`.
 
 # Logging
 
-Tool invocations are logged under `hermes` as `tools.run name=<tool> status=<status> env=<HERMES_ENV>`, omitting argument values and user prompt text.
+Tool calls log under `hermes` (`tools.run name=<tool> status=<status> env=<HERMES_ENV>`) without prompt text or argument secrets.
 
 # Versioning
 
-Skill version `1.1.0` tracks updates to the autonomous tool roster and dotted memory conventions.
+Skill version `1.1.0` tracks the generic multi-step tool loop and dotted memory layout.
 
 # Test coverage
 
@@ -62,5 +44,5 @@ Skill version `1.1.0` tracks updates to the autonomous tool roster and dotted me
 
 # Documentation references
 
-- `docs/architecture/personal-assistant.md`
+- `AGENTS.md`
 - `README.md`

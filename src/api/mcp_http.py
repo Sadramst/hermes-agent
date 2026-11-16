@@ -37,7 +37,7 @@ MAX_MCP_REQUESTS = 60
 MCP_WINDOW_SECONDS = 60.0
 LIMIT_TEXT = "MCP request limit reached"
 INSTRUCTIONS = (
-    "Tools for Sadra's Hermes personal assistant: skills, memory keys/search, "
+    "Tools for your Hermes personal assistant: skills, memory keys/search, "
     "document RAG save/search, local time, and completions. "
     "Search results carry [label] citations."
 )

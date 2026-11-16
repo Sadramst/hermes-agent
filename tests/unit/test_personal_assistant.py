@@ -1,4 +1,4 @@
-"""Tests for Sadra's personal assistant profile, timezone clock, providers, tools, skills, and CLI."""
+"""Tests for generic personal assistant profile, timezone clock, providers, tools, skills, and CLI."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agent.core import HermesAgent
-from agent.profile import build_agent_system_prompt, load_personal_profile
-from agent.tools import TOOL_ARGUMENTS, ToolCall
+from agent.profile import PersonalProfile, build_agent_system_prompt, load_personal_profile
+from agent.tools import TOOL_ARGUMENTS
 from api.app import create_app
 from cli.main import main as cli_main
 from services.model import ModelToolCall, ModelTurn
@@ -108,10 +108,14 @@ def test_settings_accept_personal_fields_and_reject_invalid_values(tmp_path: Pat
         )
 
 
-def test_profile_injection_in_run_agent_preserves_gateway_identity(repo_root: Path, tmp_path: Path) -> None:
+def test_profile_system_prompt_stays_generic_and_injects_user_profile(repo_root: Path, tmp_path: Path) -> None:
+    generic_prompt = build_agent_system_prompt(PersonalProfile(soul="", user=""))
+    assert "Sadra" not in generic_prompt
+    assert "non-custodial" in generic_prompt.lower()
+
     profile = load_personal_profile(repo_root / "gateway")
     assert profile.loaded is True
-    assert "Sadra" in profile.soul
+    assert "Everyday Personal Assistant" in profile.soul
     assert "Sadramst" in profile.user
 
     system_prompt = build_agent_system_prompt(
@@ -145,7 +149,7 @@ def test_profile_injection_in_run_agent_preserves_gateway_identity(repo_root: Pa
     result = agent.run_agent("Check today's date and my finance notes")
     assert result["text"] == "Checked clock and finance keys."
     assert model.messages_seen[0][0]["role"] == "system"
-    assert "Sadra" in str(model.messages_seen[0][0]["content"])
+    assert "USER.md" in str(model.messages_seen[0][0]["content"])
     assert [s["name"] for s in result["steps"]] == ["current_time", "list_memories"]
     assert result["steps"][1]["output"] == "finance.runway"
 
@@ -196,19 +200,18 @@ def test_http_routes_for_providers_memories_and_health(repo_root: Path, tmp_path
     assert memories.json() == {"keys": ["goal.focus"]}
 
 
-def test_all_personal_skills_follow_contract(repo_root: Path) -> None:
+def test_all_everyday_skills_stay_generic_and_follow_contract(repo_root: Path) -> None:
     skills = SkillLoader(repo_root / "storage" / "skills").load()
     names = {skill.name for skill in skills}
-    assert {
+    assert names == {
         "autonomous-problem-solver",
         "bootstrap-hermes-stack",
         "personal-development-coach",
         "personal-financial-advisor",
-        "provider-and-subscription-routing",
         "software-engineering-architect",
-        "telegram-assistant-ops",
-    } <= names
+    }
     for skill in skills:
+        assert "sadra" not in skill.body.lower(), f"Hardcoded user leaked in {skill.name}"
         for heading in REQUIRED_HEADINGS:
             assert f"# {heading}" in skill.body, f"{skill.name} missing # {heading}"
 
@@ -237,4 +240,3 @@ def test_cli_personal_subcommands(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert provider_json["auth_mode"] == "openrouter"
     assert provider_json["gemini_subscription"]["supported_today"] is False
     assert set(TOOL_ARGUMENTS) >= {"list_memories", "current_time"}
-

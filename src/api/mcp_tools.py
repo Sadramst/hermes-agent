@@ -44,7 +44,7 @@ SEARCH_MEMORY = (
     "Search Hermes memory records by meaning when you do not know the exact key. "
     "Each result names the key; call recall with it for the full record."
 )
-CURRENT_TIME = "Return the current date, local time in Sadra's configured timezone, UTC ISO timestamp, and ISO week."
+CURRENT_TIME = "Return the current date, local time in the configured timezone, UTC ISO timestamp, and ISO week."
 COMPLETE = "Ask Hermes for one completion using its configured model."
 
 

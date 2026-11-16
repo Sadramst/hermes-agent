@@ -46,7 +46,7 @@ auxiliary:
 platforms:
   telegram:
     enabled: true
-    # Optional: organize DMs into Telegram forum/DM topics (requires BotFather Threaded Mode enabled).
+    # Optional: organize DMs into Telegram topic tabs (requires BotFather Threaded Mode enabled).
     # Replace 000000000 with your numeric Telegram chat ID from @userinfobot:
     # extra:
     #   dm_topics:
@@ -54,13 +54,13 @@ platforms:
     #       topics:
     #         - name: General
     #           icon_color: 7322096
-    #         - name: Engineering & Ops
+    #         - name: Work & Tech
     #           icon_color: 9367192
-    #         - name: Personal Growth
+    #         - name: Personal & Habits
     #           icon_color: 16766590
-    #         - name: Finance Advisory
+    #         - name: Finance
     #           icon_color: 13338331
-    #         - name: Briefings & Alerts
+    #         - name: Briefings
     #           icon_color: 16478047
 
 # Shared Python API MCP server (Docker internal DNS; expands ${HERMES_API_TOKEN} on connect)
@@ -70,4 +70,3 @@ mcp_servers:
     headers:
       Authorization: "Bearer ${HERMES_API_TOKEN}"
     enabled: true
-

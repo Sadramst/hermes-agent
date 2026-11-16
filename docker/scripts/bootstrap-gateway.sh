@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sync Sadra's version-controlled gateway templates (`gateway/`) into the running
+# Sync version-controlled gateway templates (`gateway/`) into the running
 # `hermes-gateway` container volume (`/opt/data`) with timestamped backups.
 # Usage: bash docker/scripts/bootstrap-gateway.sh [--force-user] [--force-config]
 set -euo pipefail

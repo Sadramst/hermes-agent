@@ -64,7 +64,7 @@ AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "key": {"type": "string", "description": "Short dotted memory key (e.g. 'goal.q4', 'finance.runway')."},
+                    "key": {"type": "string", "description": "Short dotted memory key (e.g. 'goal.weekly', 'finance.budget', 'work.project')."},
                     "value": {"type": "string", "description": "Fact or note text to store."},
                 },
                 "required": ["key", "value"],

@@ -1,39 +1,36 @@
-# Example scheduled routines for Sadra's Telegram personal assistant (hermes-gateway).
-# Create or inspect cron jobs interactively inside `hermes-gateway` (`hermes cron` / Telegram chat),
-# adapting schedules to your active timezone (default UTC+08:00 / Asia/Singapore).
+# Example everyday scheduled routines for Telegram (hermes-gateway).
+# Create or adjust schedules via `hermes cron` inside `hermes-gateway` (or directly in chat).
+# Schedules run in the container timezone set by HERMES_TIMEZONE (`TZ`).
 
 routines:
   - name: morning-briefing
     schedule: "0 8 * * 1-5"
     channel: telegram
     prompt: >
-      Good morning check-in for Sadra. Call `hermes-api` `current_time`, check `list_memories`
-      for `goal.` and `work.` keys, and send a concise morning briefing: today's date, top 3
-      priorities, open engineering/VPS items, and one focus reminder.
+      Good morning check-in. Call `hermes-api` `current_time`, check `list_memories` for `goal.`
+      and `work.` keys, and send a concise morning plan: today's date, top 3 priorities,
+      and one focus reminder.
 
   - name: evening-consolidation
     schedule: "30 21 * * *"
     channel: telegram
     prompt: >
-      Evening wrap-up for Sadra. Ask briefly what was completed today, any new decisions or
-      financial/personal notes worth saving to `hermes-api` (`remember` / `save_document`),
-      and suggest tomorrow's #1 focus task.
+      Evening wrap-up. Ask briefly what went well today, any decisions, spending/budget notes, or
+      learnings worth saving to `hermes-api` (`remember` / `save_document`), and suggest
+      tomorrow's top priority.
 
-  - name: weekly-review-and-finance-checkin
+  - name: weekly-review
     schedule: "0 10 * * 0"
     channel: telegram
     prompt: >
-      Sunday weekly review for Sadra. Review `goal.`, `habit.`, and `finance.` keys in
-      `hermes-api` (`list_memories` + `recall`). Summarize weekly progress, cashflow/budget
-      check-in items to update, and propose next week's engineering, personal growth, and
-      financial priorities.
+      Sunday weekly review. Inspect `goal.`, `habit.`, and `finance.` keys in `hermes-api`
+      (`list_memories` + `recall`). Summarize progress, highlight any budget/runway numbers to
+      refresh, and propose next week's top priorities.
 
-  - name: weekly-ops-health
+  - name: weekly-stack-check
     schedule: "0 9 * * 1"
     channel: telegram
     prompt: >
-      Check `ops.` memory keys and `search_documents` for VPS maintenance notes. Remind Sadra
-      to verify `api.hermes.sadramst.dev/health`, disk space (`cleanup-disk.sh --dry-run`),
-      and container updates (including checking if Nous Research released official Gemini
-      Subscription OAuth in `nousresearch/hermes-agent`).
-
+      Check `ops.` memory keys in `hermes-api`. Remind the user to check stack health,
+      host disk space (`cleanup-disk.sh --dry-run`), and container updates (including checking
+      if Nous Research shipped official Google-approved Gemini Subscription OAuth).

@@ -4,37 +4,37 @@ version: 1.0.0
 ---
 # Purpose
 
-Coach Sadra on goal decomposition, deep-work planning, habit consistency, learning synthesis, and weekly reviews using persistent `goal.*`, `habit.*`, and `study.*` records.
+Support everyday productivity, goal setting, habit consistency, structured learning notes, health routines, and life admin using `goal.*`, `habit.*`, and `study.*` records.
 
 # Inputs
 
-- Current priorities, reflection notes, study material, or check-in prompt
-- Stored memory keys (`list_memories` with `goal.`, `habit.`, `study.`) and `current_time`
+- Daily priorities, reflections, reading/study notes, habit check-ins, or life-admin requests
+- Current local time (`current_time`) and stored `goal.`, `habit.`, `study.` memory keys
 
 # Outputs
 
-- Prioritized daily/weekly execution plan (top 3 outcomes, time-blocked focus, clear next step)
-- Structured updates persisted via `remember` (`goal.*`, `habit.*`, `study.*`) or `save_document`
+- Realistic daily/weekly execution plan (top priorities, focus blocks, next action) or clean study/life synthesis
+- Confirmed updates saved via `remember` or `save_document`
 
 # Execution flow
 
-1. Call `current_time` to anchor today's date, weekday, and ISO week.
-2. Call `list_memories` with prefixes `goal.`, `habit.`, and `study.` (and `recall` key items) to inspect active commitments and recent progress.
-3. Distill scattered inputs into at most 3 high-leverage priorities, separating urgent noise from meaningful skill/career/health compounding.
-4. For study/learning sessions, organize notes into core concepts, practical applications to Sadra's work, and open questions, saving longer syntheses with `save_document`.
-5. Save updated goals, milestones, or habit streaks under clear dotted keys when Sadra confirms or shares updates.
+1. Call `current_time` to anchor today's date, weekday, and week number.
+2. Inspect `list_memories` (`goal.`, `habit.`, `study.`) and `USER.md` preferences before suggesting plans.
+3. Distill busy lists into at most 3 high-leverage priorities and clear, concrete next actions.
+4. Summarize learning materials into key ideas, practical takeaways, and open questions, saving longer notes with `save_document`.
+5. Persist updated goals or habit check-ins when the user shares or confirms them.
 
 # Error handling
 
-- If no `goal.*` or `habit.*` keys exist yet, invite Sadra to define 1–3 quarterly outcomes and baseline daily habits instead of inventing targets.
+- If no prior `goal.*` or `habit.*` entries exist, ask the user for 1–3 focus areas rather than inventing goals.
 
 # Logging
 
-Memory and document operations emit standard `hermes` audit logs (`memory.list`, `memory.read`, `memory.write`) without logging sensitive personal reflections.
+Memory and document operations emit standard `hermes` key-level audit logs without private journal contents.
 
 # Versioning
 
-Bump when coaching frameworks, review cadences, or memory key schemas change.
+Bump when everyday planning frameworks or memory conventions change.
 
 # Test coverage
 
@@ -42,7 +42,6 @@ Bump when coaching frameworks, review cadences, or memory key schemas change.
 
 # Documentation references
 
-- `docs/architecture/personal-assistant.md`
+- `AGENTS.md`
 - `gateway/USER.md`
 - `gateway/cron.yaml.example`
-

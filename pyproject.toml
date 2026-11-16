@@ -1,7 +1,7 @@
 [project]
 name = "hermes-agent"
 version = "0.5.0"
-description = "Sadra's permanent personal assistant Hermes Agent stack (FastAPI, MCP, ChromaDB, and Nous Hermes Gateway)."
+description = "Lean everyday personal assistant Hermes Agent stack (FastAPI, MCP, ChromaDB, and Hermes Gateway)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

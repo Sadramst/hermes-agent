@@ -4,49 +4,36 @@ version: 1.0.0
 ---
 # Purpose
 
-Guide software architecture, debugging, code review, Docker Compose, GitHub CI/CD, and Ubuntu VPS operations for Sadra across Windows local dev and `sadramst.dev` production.
+Assist with everyday software engineering, debugging, code review, system design, testing, Docker, and server automation across any repository or environment.
 
 # Inputs
 
-- Engineering task, bug report, architecture question, or VPS ops request
+- Code question, bug report, architecture choice, or deployment troubleshooting task
 - Stored engineering context (`list_memories` prefix `dev.` / `work.` / `ops.`, `search_documents`)
 
 # Outputs
 
-- Concrete implementation plan, root-cause diagnosis, diffs, or verified CLI/Docker commands
-- Updated `dev.*`, `work.*`, or `ops.*` memory keys or runbook documents when architecture decisions change
+- Root-cause diagnosis, clean implementation steps, minimal diffs, or verified CLI commands
+- Durable engineering decisions saved under `dev.*`, `work.*`, or `ops.*` when useful
 
 # Execution flow
 
-```mermaid
-flowchart TD
-  ask["Engineering / Ops Request"] --> recall["Check ops.* / dev.* memory & search_documents"]
-  recall --> scope{"Code change or VPS ops?"}
-  scope -->|"Code / Architecture"| design["Verify existing files, contracts, and tests"]
-  scope -->|"VPS / Docker"| safety["Check ports, env isolation, and disk impact"]
-  design --> verify["Run pytest and verify offline contracts"]
-  safety --> confirm["Confirm destructive/prod mutations with Sadra"]
-  verify --> save["Persist key decisions via remember / save_document"]
-  confirm --> save
-```
-
-1. Query `search_documents` and `list_memories` (`ops.`, `dev.`, `work.`) for existing port mappings (`8080` dev, `8569` prod API, `9119` dashboard), DNS (`api.hermes.sadramst.dev`, `hermes.sadramst.dev`), or repo conventions.
-2. Read the actual code/configs/tests before proposing edits; preserve all contract tests (`tests/e2e/test_docs_contract.py`, `tests/e2e/test_stack_contract.py`).
-3. Keep secrets out of git (`docker/env/.env.prod`, `.env.gateway`, `.env.local` stay untracked) and preserve `cap_drop: ALL` and `chroma-gate` isolation.
-4. For production VPS operations (`deploy.sh prod`, volume prunes, restarts), double-check rollback paths (`IMAGE_TAG` rollback, `bootstrap-gateway.sh` backups) before proposing execution.
+1. Check `list_memories` (`work.`, `dev.`, `ops.`) and `search_documents` for existing project conventions and environment setup.
+2. Inspect real files and tests before suggesting changes; preserve existing test contracts (`pytest -q -m "not integration"` and shell syntax checks).
+3. Keep secrets out of git (`.env.local`, `.env.prod`, `.env.gateway`) and maintain least-privilege container defaults (`cap_drop: ALL`).
+4. Before destructive infrastructure or database commands (`--volumes`, `delete_memory`, force resets), summarize the blast radius and ask for explicit confirmation.
 
 # Error handling
 
-- If a runbook or memory entry is missing, state the gap rather than inventing server paths or credentials.
-- Refuse or pause before any irreversible data deletion (`--volumes`, `delete_memory`, destructive migrations).
+- If project context or server details are absent from memory/files, ask or state the gap clearly instead of guessing paths or credentials.
 
 # Logging
 
-Logged via `hermes` (`tools.run`, `documents.search`, `memory.read`, `memory.write`) without leaking secrets or code payloads.
+Standard `hermes` audit events (`tools.run`, `memory.read`, `memory.write`) without logging code secrets.
 
 # Versioning
 
-Bump when Sadra's engineering stack, deployment ports, or VPS topology changes.
+Bump when shared engineering workflows or operational safety rules change.
 
 # Test coverage
 
@@ -55,7 +42,6 @@ Bump when Sadra's engineering stack, deployment ports, or VPS topology changes.
 
 # Documentation references
 
+- `AGENTS.md`
+- `docs/DEPLOYMENT.md`
 - `README.md`
-- `docs/deployment/ubuntu-server.md`
-- `docs/architecture/personal-assistant.md`
-
