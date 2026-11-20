@@ -11,6 +11,10 @@ docker/env/*.local
 docker/env/.env.prod
 docker/env/.env.agent
 docker/env/.env.gateway
+docker/env/.env.minipc
+workspace/
+knowledge/
+backups/
 *.log
 .DS_Store
 Thumbs.db

@@ -1,16 +1,19 @@
 """Allowlisted tool runner and OpenAI-compatible tool definitions for the autonomous loop.
 
 Hermes checks tool names and exact argument keys, then executes read/write actions.
-Irreversible tools (`delete_memory`) pause for human confirmation (`ask_person`).
+Irreversible tools (`delete_memory`, destructive workspace commands) pause for human
+confirmation (`ask_person`).
 """
 
 from __future__ import annotations
 
 import json
+import shlex
 from dataclasses import dataclass
 
 from services.chroma import ChromaError
 from services.embedder import EmbeddingError
+from services.workspace import WorkspaceConfirmationRequired, WorkspaceDisabledError, WorkspacePermissionError
 from utils.time import now_report
 
 MAX_STEPS = 4
@@ -40,6 +43,12 @@ TOOL_ARGUMENTS: dict[str, frozenset[str]] = {
     "search_memory": frozenset({"q"}),
     "current_time": frozenset(),
     "delete_memory": frozenset({"key"}),
+    "list_projects": frozenset(),
+    "list_project_files": frozenset({"project", "path"}),
+    "read_project_file": frozenset({"project", "path"}),
+    "search_project": frozenset({"project", "q"}),
+    "write_project_file": frozenset({"project", "path", "content"}),
+    "run_project_command": frozenset({"project", "command"}),
 }
 
 AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
@@ -64,7 +73,10 @@ AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "key": {"type": "string", "description": "Short dotted memory key (e.g. 'goal.weekly', 'finance.budget', 'work.project')."},
+                    "key": {
+                        "type": "string",
+                        "description": "Short dotted memory key (e.g. 'goal.weekly', 'finance.budget', 'work.project').",
+                    },
                     "value": {"type": "string", "description": "Fact or note text to store."},
                 },
                 "required": ["key", "value"],
@@ -171,6 +183,115 @@ AGENT_TOOL_SCHEMAS: list[dict[str, object]] = [
     },
 ]
 
+WORKSPACE_READ_SCHEMAS: list[dict[str, object]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_projects",
+            "description": "List available project directories inside the configured workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_project_files",
+            "description": "List non-secret files inside a workspace project directory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Project directory name."},
+                    "path": {"type": "string", "description": "Optional subdirectory path inside the project (pass '' for root)."},
+                },
+                "required": ["project", "path"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_project_file",
+            "description": "Read a text file inside a workspace project directory (secret files are blocked).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Project directory name."},
+                    "path": {"type": "string", "description": "Relative file path inside the project."},
+                },
+                "required": ["project", "path"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_project",
+            "description": "Search text files in a workspace project for a matching substring.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Project directory name."},
+                    "q": {"type": "string", "description": "Search query text."},
+                },
+                "required": ["project", "q"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
+WORKSPACE_WRITE_SCHEMAS: list[dict[str, object]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "write_project_file",
+            "description": "Write or update a text file inside a workspace project (requires rw mode; secret files blocked).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Project directory name."},
+                    "path": {"type": "string", "description": "Relative file path inside the project."},
+                    "content": {"type": "string", "description": "Full file contents to write."},
+                },
+                "required": ["project", "path", "content"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_project_command",
+            "description": "Run an allowlisted command inside a workspace project (e.g. git status, pytest). Destructive commands require human confirmation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Project directory name."},
+                    "command": {"type": "string", "description": "Command string such as 'git status' or 'pytest -q'."},
+                },
+                "required": ["project", "command"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
+
+def agent_tool_schemas(workspace_mode: str = "off") -> list[dict[str, object]]:
+    """Return tool schemas matching the active workspace access mode."""
+    schemas = list(AGENT_TOOL_SCHEMAS)
+    if workspace_mode in {"ro", "rw"}:
+        schemas.extend(WORKSPACE_READ_SCHEMAS)
+    if workspace_mode == "rw":
+        schemas.extend(WORKSPACE_WRITE_SCHEMAS)
+    return schemas
+
 
 @dataclass(frozen=True)
 class ToolCall:
@@ -217,6 +338,20 @@ def _stopped(agent: object, call: ToolCall) -> ToolResult | None:
         not call.arguments["id"].strip() or not call.arguments["text"].strip()
     ):
         return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
+    if call.name in {
+        "list_project_files",
+        "read_project_file",
+        "search_project",
+        "write_project_file",
+        "run_project_command",
+    } and not call.arguments["project"].strip():
+        return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
+    if call.name in {"read_project_file", "write_project_file"} and not call.arguments["path"].strip():
+        return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
+    if call.name == "search_project" and not call.arguments["q"].strip():
+        return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
+    if call.name == "run_project_command" and not call.arguments["command"].strip():
+        return ToolResult(call.name, "refused", ARGUMENTS_TEXT)
     return None
 
 
@@ -235,10 +370,72 @@ def _execute(agent: object, call: ToolCall) -> ToolResult:
         return _save_document(agent, call.arguments["id"], call.arguments["text"])
     if call.name == "search_memory":
         return ToolResult(call.name, "ran", _search_memory(agent, call.arguments["q"]))
+    if call.name in {
+        "list_projects",
+        "list_project_files",
+        "read_project_file",
+        "search_project",
+        "write_project_file",
+        "run_project_command",
+    }:
+        return _workspace_tool(agent, call)
     key = call.arguments["key"]
     if call.name == "recall":
         return ToolResult(call.name, "ran", _recall(agent, key))
     return ToolResult(call.name, "ran", _remember(agent, key, call.arguments["value"]))
+
+
+def _workspace_tool(agent: object, call: ToolCall) -> ToolResult:
+    try:
+        if call.name == "list_projects":
+            items = getattr(agent, "list_projects")()
+            if not items:
+                return ToolResult(call.name, "ran", "No projects found in workspace.")
+            lines = [
+                f"{item['name']} (git={str(bool(item.get('is_git'))).lower()})"
+                for item in items
+            ]
+            return ToolResult(call.name, "ran", "\n".join(lines))
+        if call.name == "list_project_files":
+            files = getattr(agent, "list_project_files")(
+                call.arguments["project"],
+                call.arguments["path"],
+            )
+            return ToolResult(call.name, "ran", "\n".join(files) if files else "No files matched.")
+        if call.name == "read_project_file":
+            data = getattr(agent, "read_project_file")(
+                call.arguments["project"],
+                call.arguments["path"],
+            )
+            header = f"{data['project']}/{data['path']} (lines {data['start_line']}-{data['end_line']} of {data['total_lines']})"
+            return ToolResult(call.name, "ran", f"{header}\n{data['content']}")
+        if call.name == "search_project":
+            matches = getattr(agent, "search_project")(
+                call.arguments["project"],
+                call.arguments["q"],
+            )
+            if not matches:
+                return ToolResult(call.name, "ran", "No matches found.")
+            return ToolResult(
+                call.name,
+                "ran",
+                "\n".join(f"{m['path']}:{m['line']}: {m['snippet']}" for m in matches),
+            )
+        if call.name == "write_project_file":
+            written = getattr(agent, "write_project_file")(
+                call.arguments["project"],
+                call.arguments["path"],
+                call.arguments["content"],
+                create_dirs=True,
+            )
+            return ToolResult(call.name, "ran", f"wrote {written['project']}/{written['path']} bytes={written['bytes']}")
+        argv = shlex.split(call.arguments["command"], posix=True)
+        ran = getattr(agent, "run_project_command")(call.arguments["project"], argv)
+        return ToolResult(call.name, "ran", json.dumps(ran, sort_keys=True))
+    except WorkspaceConfirmationRequired as exc:
+        return ToolResult(call.name, "ask_person", f"{ASK_TEXT} ({exc})")
+    except (WorkspaceDisabledError, WorkspacePermissionError, FileNotFoundError, ValueError) as exc:
+        return ToolResult(call.name, "refused", str(exc))
 
 
 def _arguments_ok(arguments: object, expected: frozenset[str]) -> bool:

@@ -35,6 +35,26 @@ PROVIDER_AUTH_MODES = {
     "gemini_subscription_pending",
 }
 
+WORKSPACE_MODES = {"off", "ro", "rw"}
+DEFAULT_WORKSPACE_ALLOWED_CMDS: tuple[str, ...] = (
+    "git",
+    "pytest",
+    "python3",
+    "python",
+    "ruff",
+    "npm",
+    "node",
+    "ls",
+    "find",
+    "make",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+)
+MAX_WORKSPACE_ALLOWED_CMDS = 32
+_CMD_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
 LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 REQUIRED_VARIABLES = ("HERMES_ENV", "CHROMA_HOST")
 MIN_CHROMA_TOKEN_LENGTH = 16
@@ -84,6 +104,9 @@ class Settings:
     profile_dir: str = ""
     timezone: str = "UTC"
     provider_auth_mode: str = "api_key"
+    projects_dir: str = ""
+    workspace_mode: str = "off"
+    workspace_allowed_cmds: tuple[str, ...] = DEFAULT_WORKSPACE_ALLOWED_CMDS
 
 
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
@@ -113,6 +136,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     documents_collection, memory_collection = _collections(source, embed_model is not None)
     timezone_name = _timezone(source)
     provider_auth_mode = _provider_auth_mode(source)
+    projects_dir, workspace_mode, workspace_cmds = _workspace(source)
 
     return Settings(
         hermes_env=hermes_env,
@@ -141,6 +165,9 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         profile_dir=str(source.get("HERMES_PROFILE_DIR", default_profile)).strip() or default_profile,
         timezone=timezone_name,
         provider_auth_mode=provider_auth_mode,
+        projects_dir=projects_dir,
+        workspace_mode=workspace_mode,
+        workspace_allowed_cmds=workspace_cmds,
     )
 
 
@@ -284,3 +311,20 @@ def _provider_auth_mode(source: Mapping[str, str]) -> str:
     if raw not in PROVIDER_AUTH_MODES:
         raise SettingsError(f"Invalid HERMES_PROVIDER_AUTH_MODE: {raw}")
     return raw
+
+
+def _workspace(source: Mapping[str, str]) -> tuple[str, str, tuple[str, ...]]:
+    projects_dir = str(source.get("HERMES_PROJECTS_DIR", "")).strip()
+    mode = _choice(source, "HERMES_WORKSPACE_MODE", WORKSPACE_MODES)
+    if mode != "off" and not projects_dir:
+        raise SettingsError("HERMES_PROJECTS_DIR is required when HERMES_WORKSPACE_MODE is not off")
+    raw_cmds = str(source.get("HERMES_WORKSPACE_ALLOWED_CMDS", "")).strip()
+    if not raw_cmds:
+        return projects_dir, mode, DEFAULT_WORKSPACE_ALLOWED_CMDS
+    parts = [part.strip() for part in raw_cmds.split(",")]
+    if any(not part for part in parts) or len(parts) > MAX_WORKSPACE_ALLOWED_CMDS:
+        raise SettingsError("Invalid HERMES_WORKSPACE_ALLOWED_CMDS")
+    for part in parts:
+        if _CMD_NAME.fullmatch(part) is None:
+            raise SettingsError("Invalid HERMES_WORKSPACE_ALLOWED_CMDS")
+    return projects_dir, mode, tuple(parts)

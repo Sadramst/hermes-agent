@@ -1,31 +1,30 @@
-# Ubuntu Server 24.04+, Telegram & Provider Deployment Guide
+# Ubuntu Server 24.04+, Mini PC Brain, Telegram & Provider Deployment Guide
 
-This guide deploys **Hermes Agent** (`hermes-agent` + `hermes-gateway` + `chroma-gate` + `chromadb`) on Ubuntu Server 24.04+ using Docker Compose and Nginx Proxy Manager (or another TLS reverse proxy).
+This guide deploys **Hermes Agent** (`hermes-agent` + `hermes-gateway` + `chroma-gate` + `chromadb`) on either an **always-on Mini PC Home Brain** (`minipc` overlay with mounted `/workspace` projects + `/knowledge` Brain vault) or a **cloud VPS** (`prod`) running Ubuntu Server 24.04+.
 
-> **Agent Automation Note:** If you are using an AI coding/ops agent to configure or deploy this server, tell it to read [AGENTS.md](../AGENTS.md) first.
+> **Agent Automation Note:** If you are using an AI coding/ops agent to configure or run your Mini PC or server, tell it to read [AGENTS.md](../AGENTS.md) and [MINIPC_ARCHITECTURE.md](MINIPC_ARCHITECTURE.md) first.
 
 ## Stack Topology
 
-| Container | Role | Host Ports (PROD) |
+| Container | Role | Host Ports (`prod` / `minipc`) |
 | --- | --- | --- |
-| `hermes-agent` | FastAPI + MCP + Chroma RAG + Autonomous Tool Loop (`ghcr.io/<owner>/hermes-agent`). | **8569** |
+| `hermes-agent` | FastAPI + MCP + Chroma RAG + Sandboxed Workspace Commander + Autonomous Loop. | **8569** |
 | `hermes-gateway` | Nous personal gateway (`nousresearch/hermes-agent:latest`) running Telegram, Cron, and Web Dashboard. | **9119** (Dashboard), **8642** (Gateway API) |
 | `chroma-gate` | Bearer-token proxy (`CHROMA_AUTH_TOKEN`) guarding `chromadb`. | None (internal Docker only) |
 | `chromadb` | Vector database (`chromadb/chroma:1.0.0`). | None (private `hermes-prod-chroma-net`) |
+| `cloudflared` | Optional public HTTPS Zero-Trust tunnel (`minipc` `--profile tunnel`). | None (outbound tunnel only) |
 
 ```mermaid
 flowchart LR
-  user["Personal User (Telegram, Browser, IDE MCP)"]
-  proxy["Reverse Proxy / NPM\nDashboard -> :9119\nAPI & MCP -> :8569"]
-  gw["hermes-gateway :9119\n(Outbound Telegram poll)"]
-  agent["hermes-agent :8569\ncap_drop ALL"]
+  user["Personal User Outside Home\n(Telegram, Tailscale / Tunnel, IDE MCP, Browser)"]
+  gw["hermes-gateway :9119\n(Outbound Telegram poll + /workspace + /knowledge)"]
+  agent["hermes-agent :8569\ncap_drop ALL, uid 10001"]
   gate["chroma-gate :8000"]
   chroma["chromadb :8000"]
 
   user -->|"Telegram"| gw
-  user --> proxy
-  proxy --> gw
-  proxy --> agent
+  user -->|"Tailscale / Cloudflare / NPM"| gw
+  user -->|"Tailscale / Cloudflare / NPM"| agent
   gw -->|"MCP http://hermes-agent:8080/mcp/"| agent
   agent --> gate --> chroma
 ```
@@ -34,7 +33,7 @@ flowchart LR
 
 ```bash
 sudo apt-get update && sudo apt-get upgrade -y
-sudo apt-get install -y ca-certificates curl git
+sudo apt-get install -y ca-certificates curl git acl openssl
 
 sudo apt-get remove -y docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc || true
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -48,50 +47,54 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"
 ```
 
-Log out and back in, then clone your repository (e.g. into `/opt/hermes-agent`):
+Log out and back in, then clone your repository:
 
 ```bash
-sudo mkdir -p /opt/hermes-agent && sudo chown "$USER:$USER" /opt/hermes-agent
-git clone https://github.com/Sadramst/hermes-agent.git /opt/hermes-agent
-cd /opt/hermes-agent
+git clone https://github.com/Sadramst/hermes-agent.git ~/hermes-agent
+cd ~/hermes-agent
 ```
 
-## 2. Configure Profile & Environment Files
+## 2. Option A — Always-On Mini PC Home Brain Setup (Recommended)
 
-1. Customize [gateway/USER.md](../gateway/USER.md) (name, communication style, timezone preference, domains).
-2. Generate tokens and create `docker/env/.env.prod`:
+1. Run the idempotent pre-flight setup (creates `.env.prod`, `.env.gateway`, `.env.minipc`, generates random tokens, and configures `workspace/` + `knowledge/` + `backups/` with `uid=10001` ACLs):
    ```bash
-   cp docker/env/.env.prod.example docker/env/.env.prod
-   chmod 600 docker/env/.env.prod
-   openssl rand -hex 32   # CHROMA_AUTH_TOKEN
-   openssl rand -hex 32   # HERMES_API_TOKEN
-   openssl rand -hex 32   # HERMES_DASHBOARD_BASIC_AUTH_SECRET
+   bash docker/scripts/setup-minipc.sh --no-start
    ```
-   Fill in `HERMES_TIMEZONE`, `GHCR_OWNER`, `HERMES_MODEL_*`, optional `HERMES_EMBED_*`, and add your API hostname to `HERMES_MCP_ALLOWED_HOSTS` (e.g., `hermes-agent,api.hermes.example.com`).
-3. Create and configure `docker/env/.env.gateway`:
-   - `cp docker/env/.env.gateway.example docker/env/.env.gateway && chmod 600 docker/env/.env.gateway`
-   - Uncomment **only** keys you actually populate (`OPENROUTER_API_KEY`, `NVIDIA_API_KEY`, `GOOGLE_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`).
-   - Leave unused lines commented so empty Compose variables never shadow `/opt/data/.env`.
+2. Customize [gateway/USER.md](../gateway/USER.md) and edit:
+   - `docker/env/.env.prod`: set `HERMES_TIMEZONE`, `HERMES_MODEL_API_KEY` (+ optional `HERMES_EMBED_*`), Dashboard Basic Auth credentials, and `HERMES_MCP_ALLOWED_HOSTS` (include Tailscale MagicDNS node/port or Cloudflare hostname).
+   - `docker/env/.env.gateway`: uncomment **only** keys you provide (`OPENROUTER_API_KEY`, `NVIDIA_API_KEY`, `GOOGLE_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS`).
+   - `docker/env/.env.minipc`: point `HERMES_HOST_PROJECTS_DIR` and `HERMES_HOST_KNOWLEDGE_DIR` to your local projects and Obsidian/docs vault, set `HERMES_WORKSPACE_MODE=rw`, and optionally set `CLOUDFLARE_TUNNEL_TOKEN`.
+3. Build, launch, sync identity, and index your Brain vault + projects:
+   ```bash
+   bash docker/scripts/deploy.sh minipc
+   bash docker/scripts/bootstrap-gateway.sh --force-config
+   bash docker/scripts/sync-brain.sh --projects
+   ```
 
-## 3. Deploy & Sync Gateway
+## 3. Option B — Cloud VPS Deployment (`prod`)
 
-```bash
-cd /opt/hermes-agent
-bash docker/scripts/deploy.sh prod
-bash docker/scripts/bootstrap-gateway.sh --force-config
-```
+1. Copy env templates (`docker/env/.env.prod.example` → `docker/env/.env.prod`, `docker/env/.env.gateway.example` → `docker/env/.env.gateway`, `chmod 600`), generate 32-byte hex tokens via `openssl rand -hex 32`, and fill `GHCR_OWNER`, `IMAGE_TAG`, API keys, and `HERMES_MCP_ALLOWED_HOSTS`.
+2. Deploy & sync gateway:
+   ```bash
+   bash docker/scripts/deploy.sh prod
+   bash docker/scripts/bootstrap-gateway.sh --force-config
+   ```
 
-Verify health, providers, and MCP:
+## 4. Access From Outside the House
 
-```bash
-curl -sS http://127.0.0.1:8569/health
-docker compose --env-file docker/env/.env.prod --env-file docker/env/.env.gateway \
-  -f docker/docker-compose.prod.yml exec hermes-gateway hermes mcp test hermes-api
-```
+1. **Telegram (Always Available):** Outbound HTTPS polling — zero router port-forwarding required.
+2. **Tailscale Mesh VPN (Private Dashboard, API, `/mcp`, SSH):**
+   ```bash
+   curl -fsSL https://tailscale.com/install.sh | sh
+   sudo tailscale up --ssh
+   sudo tailscale serve --bg --https=443 http://127.0.0.1:9119
+   sudo tailscale serve --bg --https=8443 http://127.0.0.1:8569
+   ```
+   Add `<node>.<tailnet>.ts.net` and `<node>.<tailnet>.ts.net:8443` to `HERMES_MCP_ALLOWED_HOSTS` inside `.env.prod`.
+3. **Optional Cloudflare Tunnel (`--profile tunnel`):** Put `CLOUDFLARE_TUNNEL_TOKEN=...` in `.env.minipc`, add your public API domain to `HERMES_MCP_ALLOWED_HOSTS`, and run `bash docker/scripts/deploy.sh minipc`.
+4. **Reverse Proxy (VPS / Nginx Proxy Manager):** Forward `https://<dashboard-domain>` → `:9119` and `https://<api-domain>` → `:8569` (WebSockets ON, preserve `Host` header for `/mcp`).
 
-Expected: `status: "ok"`, `chroma.reachable: true`, `assistant.profile_loaded: true`, `mcp.enabled: true`, and all 9 MCP tools (`complete`, `current_time`, `list_memories`, `list_skills`, `recall`, `remember`, `save_document`, `search_documents`, `search_memory`).
-
-## 4. Telegram, OAuth Subscriptions & Official Gemini Status
+## 5. Telegram, OAuth Subscriptions & Official Gemini Status
 
 ### Telegram Setup
 1. Open **`@BotFather`** → `/newbot` → copy `TELEGRAM_BOT_TOKEN`.
@@ -111,15 +114,20 @@ Expected: `status: "ok"`, `chroma.reachable: true`, `assistant.profile_loaded: t
     -f docker/docker-compose.prod.yml exec -it hermes-gateway hermes model
   ```
 
-## 5. Reverse Proxy, Firewall & Maintenance
+## 6. Routine Updates, Brain Sync & Backups
 
-- **Dashboard:** Forward `https://<dashboard-domain>` → `http://<vps-ip>:9119` (WebSockets ON, SSL forced).
-- **API & MCP:** Forward `https://<api-domain>` → `http://<vps-ip>:8569` (WebSockets ON, SSL forced, **preserve `Host` header** matching `HERMES_MCP_ALLOWED_HOSTS`).
-- **Firewall:** Only open `OpenSSH`, `8569/tcp` (if proxied remotely), and `9119/tcp` (if proxied remotely). Telegram needs no inbound port.
-- **Routine updates & cleanup:**
-  ```bash
-  git pull && bash docker/scripts/deploy.sh prod
-  bash docker/scripts/bootstrap-gateway.sh
-  bash docker/scripts/cleanup-disk.sh --dry-run
-  bash docker/scripts/cleanup-disk.sh
-  ```
+```bash
+# Re-index knowledge/ and workspace project docs into ChromaDB
+bash docker/scripts/sync-brain.sh --projects
+
+# Compressed snapshot of memory, skills, ChromaDB, and gateway volumes (keeps latest 14)
+bash docker/scripts/backup-brain.sh --keep 14
+
+# Pull latest git changes and rebuild/restart Mini PC stack
+git pull && bash docker/scripts/deploy.sh minipc
+bash docker/scripts/bootstrap-gateway.sh
+
+# Reclaim unused Docker build/image cache safely
+bash docker/scripts/cleanup-disk.sh --dry-run
+bash docker/scripts/cleanup-disk.sh
+```

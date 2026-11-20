@@ -30,7 +30,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HERMES_PORT=8080
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 ca-certificates \
+    && apt-get install -y --no-install-recommends python3 ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin hermes
 
@@ -57,7 +57,7 @@ COPY docker /app/docker
 COPY docs /app/docs
 COPY vector-db /app/vector-db
 COPY .github /app/.github
-COPY LICENSE README.md /app/
+COPY LICENSE README.md AGENTS.md /app/
 RUN /opt/venv/bin/pip install --no-cache-dir "pytest>=8.3" "pyyaml>=6.0" "httpx>=0.27"
 USER hermes
 WORKDIR /app

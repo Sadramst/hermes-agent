@@ -12,12 +12,15 @@ Edit this file directly or ask Hermes in chat to update your preferences over ti
   - Explicit risk/assumption callouts before irreversible actions
 
 ## Everyday Focus Areas
-1. **Work & Engineering:** Software architecture, AI workflows, automation, debugging, and clean shipping across local workstation and Linux server.
-2. **Personal Growth & Daily Execution:** Deep work blocks, practical learning notes, consistent health/fitness habits, and weekly reviews.
+1. **Work & Engineering:** Managing active software repositories, AI workflows, architecture, debugging, and shipping across `/workspace` on the Mini PC and laptops remotely.
+2. **Personal Growth & Daily Execution:** Deep work blocks, practical learning notes synced via `/knowledge` + Brain RAG, consistent health/fitness habits, and weekly reviews.
 3. **Personal Finance Organization:** Clear cashflow visibility, emergency runway, savings targets, and risk-aware decision comparisons (analytical only — never autonomous money movement).
-4. **Life Admin & Knowledge Capture:** Research synthesis, travel/errands planning, writing, and searchable long-term notes.
+4. **Life Admin & Knowledge Capture:** Research synthesis, travel/errands planning, writing, and searchable long-term memory across all devices.
 
-## Optional Infrastructure Context (When Discussing Self-Hosting)
-- **Local Dev:** Workstation `.venv`, IDE MCP (`Antigravity` / `Cursor`), or Docker `dev` (`http://127.0.0.1:8080`)
-- **Production Stack:** Ubuntu Docker Compose (`hermes-agent`, `hermes-gateway`, `chroma-gate`, `chromadb`)
+## Infrastructure Context (Mini PC Home Brain)
+- **Always-On Brain Host:** Mini PC (Ubuntu Server 24.04 LTS, Docker Compose `minipc` profile)
+- **Mounted Directories:**
+  - Projects Workspace: `/workspace` (mapped from host `HERMES_HOST_PROJECTS_DIR`, `rw` mode with safety allowlist)
+  - Personal Knowledge Vault: `/knowledge` (mapped read-only from host `HERMES_HOST_KNOWLEDGE_DIR`, indexed into ChromaDB)
+- **Access From Anywhere:** Telegram (`hermes-gateway`), Tailscale private mesh VPN (`hermes-dashboard` / API / `/mcp`), optional Cloudflare Tunnel HTTPS, and remote IDE MCP (`Antigravity` / `Cursor`)
 - **Shared Memory Prefixes (`hermes-api`):** `profile.*`, `work.*`, `dev.*`, `goal.*`, `habit.*`, `study.*`, `finance.*`, `ops.*`

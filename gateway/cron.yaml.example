@@ -27,10 +27,11 @@ routines:
       (`list_memories` + `recall`). Summarize progress, highlight any budget/runway numbers to
       refresh, and propose next week's top priorities.
 
-  - name: weekly-stack-check
+  - name: weekly-minipc-maintenance
     schedule: "0 9 * * 1"
     channel: telegram
     prompt: >
-      Check `ops.` memory keys in `hermes-api`. Remind the user to check stack health,
-      host disk space (`cleanup-disk.sh --dry-run`), and container updates (including checking
-      if Nous Research shipped official Google-approved Gemini Subscription OAuth).
+      Check `ops.` memory keys in `hermes-api`. Remind the user to verify Mini PC `/health`
+      (`workspace`, `chroma`, `assistant`), run `bash docker/scripts/sync-brain.sh`, check recent
+      `backups/` snapshots (`backup-brain.sh`), inspect disk space (`cleanup-disk.sh --dry-run`),
+      and check if Nous Research shipped official Google-approved Gemini Subscription OAuth.

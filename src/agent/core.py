@@ -9,10 +9,10 @@ from agent.context import CONTEXT_PASSAGES, context_block, passage_label
 from agent.profile import build_agent_system_prompt, load_personal_profile
 from agent.prompt import assemble_completion_prompt
 from agent.tools import (
-    AGENT_TOOL_SCHEMAS,
     MAX_STEPS,
     ToolCall,
     ToolResult,
+    agent_tool_schemas,
     run_calls,
 )
 from memory.store import MemoryStore
@@ -28,8 +28,10 @@ from services.documents import (
     check_source,
 )
 from services.embedder import HASH_NAME, EmbeddingError, build_embedder
+from services.ingest import ingest_directory as run_ingest_directory
 from services.model import MAX_PROMPT_CHARS, ModelClient, ModelNotConfigured, check_prompt
 from services.rerank import fuse
+from services.workspace import DEFAULT_EXEC_TIMEOUT, WorkspaceManager
 from skills.loader import Skill, SkillLoader
 from utils.logging import configure_logging
 from utils.settings import Settings
@@ -60,6 +62,11 @@ class HermesAgent:
         self.memory = MemoryStore(settings.memory_dir)
         self.skills = SkillLoader(settings.skills_dir)
         self.profile = load_personal_profile(settings.profile_dir)
+        self.workspace = WorkspaceManager(
+            settings.projects_dir or None,
+            mode=settings.workspace_mode,
+            allowed_cmds=settings.workspace_allowed_cmds,
+        )
         self.embedder = embedder if embedder is not None else build_embedder(settings)
         dimension = getattr(self.embedder, "dimension", None)
         self.chroma = chroma_client or ChromaClient(
@@ -129,7 +136,113 @@ class HermesAgent:
     def health(self) -> dict[str, object]:
         reachable = self.chroma.heartbeat()
         self.log.debug("chroma.heartbeat reachable=%s env=%s", reachable, self.settings.hermes_env)
-        return _health_payload(self.settings, reachable, profile_loaded=self.profile.loaded)
+        return _health_payload(
+            self.settings,
+            reachable,
+            profile_loaded=self.profile.loaded,
+            workspace_enabled=self.workspace.enabled,
+            workspace_mode=self.workspace.mode,
+            project_count=self.workspace.project_count(),
+        )
+
+    def list_projects(self) -> list[dict[str, object]]:
+        """Return project summaries inside the configured workspace directory."""
+        return self.workspace.list_projects()
+
+    def list_project_files(self, project: str, subpath: str = "", limit: int = 100) -> list[str]:
+        """List non-secret files under one project inside the workspace."""
+        return self.workspace.list_files(project, subpath, limit=limit)
+
+    def read_project_file(
+        self,
+        project: str,
+        rel_path: str,
+        start_line: int = 1,
+        end_line: int = 200,
+    ) -> dict[str, object]:
+        """Read a line range from one file inside a workspace project."""
+        return self.workspace.read_file(project, rel_path, start_line=start_line, end_line=end_line)
+
+    def search_project(self, project: str, query: str, limit: int = 20) -> list[dict[str, object]]:
+        """Search text files in one workspace project for matching lines."""
+        return self.workspace.search_files(project, query, limit=limit)
+
+    def write_project_file(
+        self,
+        project: str,
+        rel_path: str,
+        content: str,
+        create_dirs: bool = False,
+    ) -> dict[str, object]:
+        """Write or replace a text file inside a workspace project (rw mode only)."""
+        written = self.workspace.write_file(project, rel_path, content, create_dirs=create_dirs)
+        self.log.info(
+            "workspace.write project=%s path=%s env=%s",
+            project,
+            written["path"],
+            self.settings.hermes_env,
+        )
+        return written
+
+    def run_project_command(
+        self,
+        project: str,
+        argv: list[str],
+        timeout: int = DEFAULT_EXEC_TIMEOUT,
+    ) -> dict[str, object]:
+        """Run an allowlisted command inside a workspace project (rw mode only)."""
+        result = self.workspace.run_command(project, argv, timeout=timeout)
+        self.log.info(
+            "workspace.exec project=%s cmd=%s code=%s env=%s",
+            project,
+            argv[0],
+            result["returncode"],
+            self.settings.hermes_env,
+        )
+        return result
+
+    def ingest_directory(
+        self,
+        directory: str,
+        *,
+        prefix: str = "brain",
+        include_code: bool = False,
+        max_files: int = 200,
+    ) -> dict[str, object]:
+        """Ingest Markdown/text (and optional code) files from `directory` into ChromaDB."""
+        summary = run_ingest_directory(
+            self,
+            directory,
+            prefix=prefix,
+            include_code=include_code,
+            max_files=max_files,
+        )
+        self.log.info(
+            "brain.ingest prefix=%s ingested=%s unchanged=%s env=%s",
+            prefix,
+            summary["ingested"],
+            summary["unchanged"],
+            self.settings.hermes_env,
+        )
+        return summary
+
+    def ingest_project(
+        self,
+        project: str,
+        *,
+        prefix: str = "",
+        include_code: bool = False,
+        max_files: int = 100,
+    ) -> dict[str, object]:
+        """Ingest one project directory from the configured workspace into ChromaDB."""
+        proj_root = self.workspace.resolve_project(project)
+        effective_prefix = prefix.strip() or f"proj-{project}"
+        return self.ingest_directory(
+            str(proj_root),
+            prefix=effective_prefix,
+            include_code=include_code,
+            max_files=max_files,
+        )
 
     def save_document(self, doc_id: str, text: str, source: str = "") -> dict[str, object]:
         """Chunk, embed, and store one document. Unchanged text is not embedded again."""
@@ -316,6 +429,8 @@ class HermesAgent:
                 self.profile,
                 timezone_name=self.settings.timezone,
                 provider_auth_mode=self.settings.provider_auth_mode,
+                workspace_enabled=self.workspace.enabled,
+                workspace_mode=self.workspace.mode,
             )
             messages: list[dict[str, object]] = [
                 {"role": "system", "content": system_prompt},
@@ -323,8 +438,9 @@ class HermesAgent:
             ]
             steps_taken = []
             text = ""
+            active_tools = agent_tool_schemas(self.settings.workspace_mode)
             for step_index in range(max_steps):
-                turn = chat_fn(messages, tools=AGENT_TOOL_SCHEMAS, model=name)
+                turn = chat_fn(messages, tools=active_tools, model=name)
                 if not turn.tool_calls:
                     text = turn.content
                     break
@@ -525,6 +641,9 @@ def _health_payload(
     reachable: bool,
     *,
     profile_loaded: bool = False,
+    workspace_enabled: bool = False,
+    workspace_mode: str = "off",
+    project_count: int = 0,
 ) -> dict[str, object]:
     return {
         "status": "ok",
@@ -546,6 +665,11 @@ def _health_payload(
         "assistant": {
             "timezone": settings.timezone,
             "profile_loaded": profile_loaded,
+        },
+        "workspace": {
+            "enabled": workspace_enabled,
+            "mode": workspace_mode,
+            "project_count": project_count,
         },
         "mcp": {
             "enabled": settings.mcp_enabled,

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0] - 2026-11-20
+
+### Added
+
+- **Always-On Mini PC Home Brain & Multi-Project Commander Stack:**
+  - Sandboxed `WorkspaceManager` (`src/services/workspace.py`) gated by `HERMES_WORKSPACE_MODE` (`off`/`ro`/`rw`), `HERMES_PROJECTS_DIR`, and `HERMES_WORKSPACE_ALLOWED_CMDS` with strict path-jail protection, symlink/traversal guards, secret file denylist (`.git/**`, `.env` except `*.example`/`*.sample`, keys/certs, `auth.json`), non-shell allowlisted execution, and `ask_person` / HTTP `409` confirmation gating on destructive commands (`rm`, `git push --force`, `git reset --hard`, `git clean -f`).
+  - Brain directory ingestion service (`src/services/ingest.py`) for chunking & indexing Markdown/text/code files under `/knowledge` and `/workspace` with SHA-256 deduplication and collision-free document IDs.
+  - Protected HTTP routes (`GET /projects`, `GET /projects/{p}/files`, `GET /projects/{p}/read`, `GET /projects/{p}/search`, `POST /projects/{p}/write`, `POST /projects/{p}/exec`, `POST /projects/{p}/ingest`), 6 workspace agent tools in `run_agent()`, workspace telemetry in `/health`, and CLI subcommands (`hermes projects`, `hermes ingest`).
+  - Mini PC Docker Compose overlay (`docker/docker-compose.minipc.yml`) mounting host `/workspace` and `/knowledge` across both `hermes-agent` and `hermes-gateway`, plus optional `cloudflared` tunnel profile (`CLOUDFLARE_TUNNEL_TOKEN`), `docker/env/.env.minipc.example`, `docker/scripts/setup-minipc.sh`, `docker/scripts/sync-brain.sh`, and `docker/scripts/backup-brain.sh`.
+  - Complete Mini PC & Remote Access Architecture blueprint ([MINIPC_ARCHITECTURE.md](MINIPC_ARCHITECTURE.md)), plus updated `AGENTS.md`, `DEPLOYMENT.md`, `gateway/` templates, and QA unit/contract tests (`test_workspace.py`, `test_ingest.py`).
+- Added `git` to the runtime container image and included `AGENTS.md` in the Docker `test` stage in `docker/Dockerfile`.
+
 ## [0.5.0] - 2026-11-16
 
 ### Added

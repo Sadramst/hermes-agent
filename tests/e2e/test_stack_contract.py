@@ -137,11 +137,32 @@ def test_dockerfile_is_multistage_ubuntu_and_non_root(repo_root: Path) -> None:
     assert "ubuntu:24.04" in stages["builder"][0]
     assert "ubuntu:24.04" in stages["runtime"][0]
     runtime_body = stages["runtime"][1]
+    assert "git" in runtime_body
     assert "COPY gateway /app/gateway" in runtime_body
     assert "USER hermes" in runtime_body
     assert "USER root" not in runtime_body
     assert "HEALTHCHECK" in runtime_body
+    assert "AGENTS.md" in stages["test"][1]
     assert "pytest" in stages["test"][1]
+
+
+def test_minipc_overlay_wires_workspace_knowledge_and_optional_tunnel(repo_root: Path) -> None:
+    minipc = _load(repo_root, "docker/docker-compose.minipc.yml")
+    services = minipc["services"]
+    agent = services["hermes-agent"]
+    gateway = services["hermes-gateway"]
+    gate = services["chroma-gate"]
+    tunnel = services["cloudflared"]
+
+    assert agent["pull_policy"] == "build"
+    assert gate["pull_policy"] == "build"
+    assert agent["environment"]["HERMES_PROJECTS_DIR"] == "/workspace"
+    assert any(":/workspace" in str(vol) for vol in agent["volumes"])
+    assert any(":/knowledge:ro" in str(vol) for vol in agent["volumes"])
+    assert any(":/workspace" in str(vol) for vol in gateway["volumes"])
+    assert any(":/knowledge:ro" in str(vol) for vol in gateway["volumes"])
+    assert tunnel["profiles"] == ["tunnel"]
+    assert "cloudflare/cloudflared" in str(tunnel["image"])
 
 
 def test_build_push_and_deploy_scripts(repo_root: Path) -> None:
@@ -155,12 +176,18 @@ def test_build_push_and_deploy_scripts(repo_root: Path) -> None:
     assert "ghcr.io/" in push
     deploy = (repo_root / "docker" / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert ".env.gateway.example" in deploy
+    assert ".env.minipc.example" in deploy
+    assert "minipc" in deploy
     assert "chmod 600" in deploy
     gitignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
-    assert "docker/env/.env.gateway" in gitignore
+    for ignored in ("docker/env/.env.gateway", "docker/env/.env.minipc", "workspace/", "knowledge/", "backups/"):
+        assert ignored in gitignore
     gateway_env = (repo_root / "docker" / "env" / ".env.gateway.example").read_text(encoding="utf-8")
     for var in ("OPENROUTER_API_KEY", "GOOGLE_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"):
         assert var in gateway_env
+    minipc_env = (repo_root / "docker" / "env" / ".env.minipc.example").read_text(encoding="utf-8")
+    for var in ("HERMES_HOST_PROJECTS_DIR", "HERMES_HOST_KNOWLEDGE_DIR", "HERMES_WORKSPACE_MODE", "CLOUDFLARE_TUNNEL_TOKEN"):
+        assert var in minipc_env
 
 
 def test_heartbeat_paths_match_vector_db_config(repo_root: Path) -> None:

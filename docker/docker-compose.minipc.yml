@@ -1,0 +1,55 @@
+# Compose overlay for Sadra's always-on Mini PC Home Brain & Multi-Project Commander.
+# Usage: bash docker/scripts/deploy.sh minipc
+# Layered on top of docker/docker-compose.prod.yml via `docker compose -f ... -f ...`.
+
+services:
+  hermes-agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    pull_policy: build
+    env_file:
+      - env/.env.prod
+      - path: env/.env.minipc
+        required: false
+    environment:
+      HERMES_PROJECTS_DIR: /workspace
+      HERMES_WORKSPACE_MODE: ${HERMES_WORKSPACE_MODE:-rw}
+      HERMES_WORKSPACE_ALLOWED_CMDS: ${HERMES_WORKSPACE_ALLOWED_CMDS:-}
+    volumes:
+      - hermes_memory:/app/storage/memory
+      - hermes_skills:/app/storage/skills
+      - ${HERMES_HOST_PROJECTS_DIR:-../workspace}:/workspace
+      - ${HERMES_HOST_KNOWLEDGE_DIR:-../knowledge}:/knowledge:ro
+
+  chroma-gate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    pull_policy: build
+
+  hermes-gateway:
+    env_file:
+      - env/.env.prod
+      - path: env/.env.gateway
+        required: false
+      - path: env/.env.minipc
+        required: false
+    volumes:
+      - hermes_gateway:/opt/data
+      - ${HERMES_HOST_PROJECTS_DIR:-../workspace}:/workspace
+      - ${HERMES_HOST_KNOWLEDGE_DIR:-../knowledge}:/knowledge:ro
+
+  # Optional Cloudflare Zero-Trust / HTTPS Tunnel (zero open router ports required).
+  # Activate by uncommenting a real CLOUDFLARE_TUNNEL_TOKEN in docker/env/.env.minipc.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    networks:
+      - hermes-net
+    restart: unless-stopped

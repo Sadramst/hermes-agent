@@ -1,4 +1,4 @@
-"""Command line interface for health checks, skill listing, autonomous agent runs, and collection maintenance."""
+"""Command line interface for health checks, skills, workspace projects, ingestion, and agent runs."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import sys
 
 from agent.core import HermesAgent
 from agent.tools import MAX_STEPS
+from services.workspace import WorkspaceDisabledError
 from utils.settings import load_settings
 
 
@@ -48,6 +49,21 @@ def main(argv: list[str] | None = None) -> int:
     mem_put.add_argument("value", help="Value text to store")
     mem_get = subcommands.add_parser("recall", help="Read a memory record by key")
     mem_get.add_argument("key", help="Memory key to read")
+
+    subcommands.add_parser("projects", help="List workspace projects configured via HERMES_PROJECTS_DIR")
+    ingest_cmd = subcommands.add_parser(
+        "ingest",
+        help="Ingest Markdown/text (and optional code) files from a directory into ChromaDB",
+    )
+    ingest_cmd.add_argument("path", help="Directory path to ingest into ChromaDB")
+    ingest_cmd.add_argument("--prefix", default="brain", help="Document ID/source prefix (default: brain)")
+    ingest_cmd.add_argument(
+        "--include-code",
+        action="store_true",
+        help="Also index source code files in addition to Markdown/text docs",
+    )
+    ingest_cmd.add_argument("--max-files", type=int, default=200, help="Maximum files to index (default: 200)")
+
     args = parser.parse_args(argv)
     agent = HermesAgent(load_settings())
 
@@ -76,6 +92,37 @@ def main(argv: list[str] | None = None) -> int:
         except FileNotFoundError:
             print("No record is stored for that key.", file=sys.stderr)
             return 1
+
+    if args.command == "projects":
+        try:
+            items = agent.list_projects()
+        except WorkspaceDisabledError:
+            items = []
+        print(
+            json.dumps(
+                {
+                    "enabled": agent.workspace.enabled,
+                    "mode": agent.workspace.mode,
+                    "projects": items,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    if args.command == "ingest":
+        try:
+            summary = agent.ingest_directory(
+                args.path,
+                prefix=args.prefix,
+                include_code=args.include_code,
+                max_files=args.max_files,
+            )
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(json.dumps(summary, sort_keys=True))
+        return 0
 
     if args.command == "run":
         print(json.dumps(agent.run_agent(args.prompt, max_steps=args.max_steps), sort_keys=True))

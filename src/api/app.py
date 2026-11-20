@@ -14,6 +14,12 @@ from services.chroma import ChromaClient, ChromaError
 from services.documents import MAX_LIMIT
 from services.embedder import EmbeddingError, build_embedder
 from services.model import ModelClient, ModelError, ModelNotConfigured
+from services.workspace import (
+    DEFAULT_EXEC_TIMEOUT,
+    WorkspaceConfirmationRequired,
+    WorkspaceDisabledError,
+    WorkspacePermissionError,
+)
 from utils.auth import is_authorized
 from utils.logging import configure_logging
 from utils.settings import Settings, load_settings
@@ -43,6 +49,23 @@ class ToolCallBody(BaseModel):
 
 class ToolRunBody(BaseModel):
     calls: list[ToolCallBody]
+
+
+class ProjectWriteBody(BaseModel):
+    path: str
+    content: str
+    create_dirs: bool = False
+
+
+class ProjectExecBody(BaseModel):
+    argv: list[str]
+    timeout: int = DEFAULT_EXEC_TIMEOUT
+
+
+class ProjectIngestBody(BaseModel):
+    prefix: str = ""
+    include_code: bool = False
+    max_files: int = 100
 
 
 def create_app(
@@ -104,7 +127,14 @@ def create_app(
     def health() -> dict[str, object]:
         reachable = bool(probe())
         logger.debug("http.health env=%s chroma_reachable=%s", resolved.hermes_env, reachable)
-        return _health_payload(resolved, reachable, profile_loaded=agent.profile.loaded)
+        return _health_payload(
+            resolved,
+            reachable,
+            profile_loaded=agent.profile.loaded,
+            workspace_enabled=agent.workspace.enabled,
+            workspace_mode=agent.workspace.mode,
+            project_count=agent.workspace.project_count(),
+        )
 
     @app.get("/providers")
     def providers(_: None = Depends(require_api_credential)) -> dict[str, object]:
@@ -128,6 +158,101 @@ def create_app(
         except EmbeddingError as exc:
             logger.warning("%s env=%s embed_status=%s", event, resolved.hermes_env, exc.status)
             raise HTTPException(status_code=502, detail="Embedding request failed") from exc
+
+    def call_workspace(action: Callable[[], dict[str, object]]) -> dict[str, object]:
+        try:
+            return action()
+        except WorkspaceDisabledError as exc:
+            raise HTTPException(status_code=403, detail="Workspace access is disabled") from exc
+        except WorkspacePermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except WorkspaceConfirmationRequired as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Project or file not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ChromaError as exc:
+            logger.warning("workspace.chroma_failed env=%s status=%s", resolved.hermes_env, exc.status)
+            raise HTTPException(status_code=502, detail="Chroma request failed") from exc
+        except EmbeddingError as exc:
+            logger.warning("workspace.embed_failed env=%s status=%s", resolved.hermes_env, exc.status)
+            raise HTTPException(status_code=502, detail="Embedding request failed") from exc
+
+    @app.get("/projects")
+    def list_projects(_: None = Depends(require_api_credential)) -> dict[str, object]:
+        return call_workspace(
+            lambda: {"mode": agent.workspace.mode, "projects": agent.list_projects()}
+        )
+
+    @app.get("/projects/{project}/files")
+    def list_project_files(
+        project: str,
+        path: str = Query(default=""),
+        limit: int = Query(default=100, ge=1, le=500),
+        _: None = Depends(require_api_credential),
+    ) -> dict[str, object]:
+        return call_workspace(
+            lambda: {"project": project, "files": agent.list_project_files(project, path, limit=limit)}
+        )
+
+    @app.get("/projects/{project}/read")
+    def read_project_file(
+        project: str,
+        path: str = Query(...),
+        start_line: int = Query(default=1, ge=1),
+        end_line: int = Query(default=200, ge=1),
+        _: None = Depends(require_api_credential),
+    ) -> dict[str, object]:
+        return call_workspace(
+            lambda: agent.read_project_file(project, path, start_line=start_line, end_line=end_line)
+        )
+
+    @app.get("/projects/{project}/search")
+    def search_project(
+        project: str,
+        q: str = Query(...),
+        limit: int = Query(default=20, ge=1, le=100),
+        _: None = Depends(require_api_credential),
+    ) -> dict[str, object]:
+        return call_workspace(
+            lambda: {"project": project, "matches": agent.search_project(project, q, limit=limit)}
+        )
+
+    @app.post("/projects/{project}/write")
+    def write_project_file(
+        project: str,
+        body: ProjectWriteBody,
+        _: None = Depends(require_api_credential),
+    ) -> dict[str, object]:
+        return call_workspace(
+            lambda: agent.write_project_file(project, body.path, body.content, create_dirs=body.create_dirs)
+        )
+
+    @app.post("/projects/{project}/exec")
+    def run_project_command(
+        project: str,
+        body: ProjectExecBody,
+        _: None = Depends(require_api_credential),
+    ) -> dict[str, object]:
+        return call_workspace(
+            lambda: agent.run_project_command(project, body.argv, timeout=body.timeout)
+        )
+
+    @app.post("/projects/{project}/ingest")
+    def ingest_project(
+        project: str,
+        body: ProjectIngestBody,
+        _: None = Depends(require_api_credential),
+    ) -> dict[str, object]:
+        return call_workspace(
+            lambda: agent.ingest_project(
+                project,
+                prefix=body.prefix,
+                include_code=body.include_code,
+                max_files=body.max_files,
+            )
+        )
 
     @app.post("/documents", status_code=201)
     def save_document(

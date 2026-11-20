@@ -40,9 +40,30 @@ def build_agent_system_prompt(
     *,
     timezone_name: str = "UTC",
     provider_auth_mode: str = "api_key",
+    workspace_enabled: bool = False,
+    workspace_mode: str = "off",
 ) -> str:
     """Build the system prompt injected into HermesAgent.run_agent() conversations."""
     clock = now_report(timezone_name)
+    rules = (
+        "Operating rules:\n"
+        "- Respect the user identity, preferences, and tone defined in USER.md and SOUL.md.\n"
+        "- Check `search_memory`, `list_memories`, `recall`, `search_documents`, or `read_skill` "
+        "before guessing prior facts or procedures.\n"
+        "- Persist durable facts using `remember` (dotted keys: profile.*, work.*, dev.*, "
+        "goal.*, habit.*, study.*, finance.*, ops.*) or `save_document` for multi-paragraph notes.\n"
+        "- Cite `[label]` whenever using passages from `search_documents`.\n"
+        "- Financial advisory is strictly analytical and non-custodial: state assumptions, "
+        "downside risks, and liquidity impacts; never execute trades/transfers or store raw credentials.\n"
+        "- Stop and defer to human confirmation when any tool returns `ask_person`."
+    )
+    if workspace_enabled:
+        rules += (
+            f"\n- Project workspace tools are active (mode={workspace_mode}): use `list_projects`, "
+            "`list_project_files`, `read_project_file`, `search_project`"
+            + (", `write_project_file`, and `run_project_command`" if workspace_mode == "rw" else "")
+            + " to work across mounted user projects cleanly without accessing secret files."
+        )
     sections = [
         (
             "You are Hermes, an everyday permanent personal assistant across daily planning, "
@@ -53,18 +74,7 @@ def build_agent_system_prompt(
             f"Current time: {clock['local_iso']} ({clock['weekday']}, {clock['iso_week']}, "
             f"tz={clock['timezone']}, auth_mode={provider_auth_mode})."
         ),
-        (
-            "Operating rules:\n"
-            "- Respect the user identity, preferences, and tone defined in USER.md and SOUL.md.\n"
-            "- Check `search_memory`, `list_memories`, `recall`, `search_documents`, or `read_skill` "
-            "before guessing prior facts or procedures.\n"
-            "- Persist durable facts using `remember` (dotted keys: profile.*, work.*, dev.*, "
-            "goal.*, habit.*, study.*, finance.*, ops.*) or `save_document` for multi-paragraph notes.\n"
-            "- Cite `[label]` whenever using passages from `search_documents`.\n"
-            "- Financial advisory is strictly analytical and non-custodial: state assumptions, "
-            "downside risks, and liquidity impacts; never execute trades/transfers or store raw credentials.\n"
-            "- Stop and defer to human confirmation when any tool returns `ask_person`."
-        ),
+        rules,
     ]
     if profile.soul:
         sections.append(f"## Identity (SOUL.md)\n{profile.soul}")
